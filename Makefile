@@ -1,4 +1,4 @@
-include operatorhub/Makefile
+# include operatorhub/Makefile
 
 MODULE   = $(shell env GO111MODULE=on $(GO) list -m)
 DATE         ?= $(shell date +%FT%T%z)
@@ -30,10 +30,11 @@ $(BIN)/%: | $(BIN) ; $(info $(M) building $(PACKAGE)…)
 
 KO = $(or ${KO_BIN},${KO_BIN},$(BIN)/ko)
 
-PIPELINES_VERSION ?= latest
-TRIGGERS_VERSION ?= latest
-DASHBOARD_VERSION ?= latest
-RESULTS_VERSION ?= v0.3.1 # latest returns an older version hence hard coding to v0.3.1 for now (tektoncd/results#138)
+TEKTON_PIPELINE_VERSION ?= latest
+TEKTON_TRIGGERS_VERSION ?= latest
+TEKTON_DASHBOARD_VERSION ?= latest
+TEKTON_RESULTS_VERSION ?= v0.4.0 # latest returns an older version hence hard coding to v0.3.1 for now (tektoncd/results#138)
+PAC_VERSION ?= 0.5.2
 
 $(BIN)/ko: PACKAGE=github.com/google/ko/cmd/ko
 
@@ -87,7 +88,7 @@ bin/%: cmd/% FORCE
 
 .PHONY: get-releases
 get-releases: |
-	$Q ./hack/fetch-releases.sh $(TARGET) $(PIPELINES_VERSION) $(TRIGGERS_VERSION) $(DASHBOARD_VERSION) $(RESULTS_VERSION) || exit ;
+	$Q ./hack/fetch-releases.sh $(TARGET) $(TEKTON_PIPELINE_VERSION) $(TEKTON_TRIGGERS_VERSION) $(TEKTON_DASHBOARD_VERSION) $(TEKTON_RESULTS_VERSION) $(PAC_VERSION) || exit ;
 
 .PHONY: apply
 apply: | $(KO) $(KUSTOMIZE) get-releases ; $(info $(M) ko apply on $(TARGET)) @ ## Apply config to the current cluster
@@ -99,6 +100,10 @@ apply: | $(KO) $(KUSTOMIZE) get-releases ; $(info $(M) ko apply on $(TARGET)) @ 
 apply-cr: | ; $(info $(M) apply CRs on $(TARGET)) @ ## Apply the CRs to the current cluster
 	$Q kubectl apply -f config/crs/$(TARGET)/$(CR)
 
+.PHONY: operator-bundle
+operator-bundle:
+	make -C operatorhub operator-bundle
+
 .PHONY: clean-cr
 clean-cr: | ; $(info $(M) clean CRs on $(TARGET)) @ ## Clean the CRs to the current cluster
 	-$Q kubectl delete -f config/crs/$(TARGET)/$(CR)
@@ -107,7 +112,7 @@ clean-cr: | ; $(info $(M) clean CRs on $(TARGET)) @ ## Clean the CRs to the curr
 resolve: | $(KO) $(KUSTOMIZE) get-releases ; $(info $(M) ko resolve on $(TARGET)) @ ## Resolve config to the current cluster
 	@ ## --load-restrictor LoadRestrictionsNone is needed in kustomize build as files which not in child tree of kustomize base are pulled
 	@ ## https://github.com/kubernetes-sigs/kustomize/issues/766
-	$Q $(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone config/$(TARGET) | $(KO) resolve --push=false --oci-layout-path=$(BIN)/oci -f -
+	$Q $(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone config/$(TARGET)/overlays/default | $(KO) resolve --push=false --oci-layout-path=$(BIN)/oci -f -
 
 .PHONY: generated
 generated: | vendor ; $(info $(M) update generated files) ## Update generated files

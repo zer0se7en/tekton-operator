@@ -54,9 +54,11 @@ func (r *Reconciler) FinalizeKind(ctx context.Context, installerSet *v1alpha1.Te
 		return err
 	}
 
-	// Delete all resources except CRDs as they are own by owner of
+	// Delete all resources except CRDs and Namespace as they are own by owner of
 	// TektonInstallerSet
-	err = deleteManifests.Filter(mf.Not(mf.CRDs)).Delete()
+	// They will be deleted when the component CR is deleted
+	deleteManifests = deleteManifests.Filter(mf.Not(mf.Any(namespacePred, mf.CRDs)))
+	err = deleteManifests.Delete(mf.PropagationPolicy(v1.DeletePropagationForeground))
 	if err != nil {
 		logger.Error("failed to delete resources")
 		return err
@@ -84,14 +86,14 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	}
 
 	// Set owner of InstallerSet as owner of CRDs so that
-	// deleting the installer will not delete the CRDs
-	// If installerSet has not set any owner then crds will
+	// deleting the installer will not delete the CRDs and Namespace
+	// If installerSet has not set any owner then CRDs will
 	// not have any owner
 	installerSetOwner := installerSet.GetOwnerReferences()
 
 	installManifests, err = installManifests.Transform(
 		injectOwner(getReference(installerSet)),
-		injectOwnerForCRDs(installerSetOwner),
+		injectOwnerForCRDsAndNamespace(installerSetOwner),
 	)
 	if err != nil {
 		logger.Error("failed to transform manifest")
@@ -106,7 +108,7 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	err = installer.EnsureCRDs()
 	if err != nil {
 		installerSet.Status.MarkCRDsInstallationFailed(err.Error())
-		return err
+		return r.handleError(err, installerSet)
 	}
 
 	// Update Status for CRD condition
@@ -116,7 +118,7 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	err = installer.EnsureClusterScopedResources()
 	if err != nil {
 		installerSet.Status.MarkClustersScopedInstallationFailed(err.Error())
-		return err
+		return r.handleError(err, installerSet)
 	}
 
 	// Update Status for ClustersScope Condition
@@ -126,7 +128,7 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	err = installer.EnsureNamespaceScopedResources()
 	if err != nil {
 		installerSet.Status.MarkNamespaceScopedInstallationFailed(err.Error())
-		return err
+		return r.handleError(err, installerSet)
 	}
 
 	// Update Status for NamespaceScope Condition
@@ -136,7 +138,7 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	err = installer.EnsureDeploymentResources()
 	if err != nil {
 		installerSet.Status.MarkDeploymentsAvailableFailed(err.Error())
-		return err
+		return r.handleError(err, installerSet)
 	}
 
 	// Update Status for Deployment Resources
@@ -177,4 +179,12 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	installerSet.Status.MarkAllDeploymentsReady()
 
 	return nil
+}
+
+func (r *Reconciler) handleError(err error, installerSet *v1alpha1.TektonInstallerSet) error {
+	if err == v1alpha1.RECONCILE_AGAIN_ERR {
+		r.enqueueAfter(installerSet, 10*time.Second)
+		return nil
+	}
+	return err
 }

@@ -30,7 +30,6 @@ import (
 	"github.com/tektoncd/operator/pkg/reconciler/common"
 	occommon "github.com/tektoncd/operator/pkg/reconciler/openshift/common"
 	"go.uber.org/zap"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/injection"
 	"knative.dev/pkg/logging"
@@ -47,8 +46,23 @@ const (
 
 	versionKey = "VERSION"
 
-	prePipelineInstallerSet  = "PrePipelineInstallerSet"
-	postPipelineInstallerSet = "PostPipelineInstallerSet"
+	prePipelineInstallerSet  = "PrePipeline"
+	postPipelineInstallerSet = "PostPipeline"
+)
+
+var (
+	preReconcileSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			v1alpha1.CreatedByKey:     createdByValue,
+			v1alpha1.InstallerSetType: prePipelineInstallerSet,
+		},
+	}
+	postReconcileSelector = metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			v1alpha1.CreatedByKey:     createdByValue,
+			v1alpha1.InstallerSetType: postPipelineInstallerSet,
+		},
+	}
 )
 
 func OpenShiftExtension(ctx context.Context) common.Extension {
@@ -104,7 +118,11 @@ func (oe openshiftExtension) PreReconcile(ctx context.Context, comp v1alpha1.Tek
 
 	SetDefault(&tp.Spec.Pipeline)
 
-	exist, err := checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, tp, prePipelineInstallerSet)
+	preReconcilerLS, err := common.LabelSelector(preReconcileSelector)
+	if err != nil {
+		return err
+	}
+	exist, err := checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, tp, preReconcilerLS)
 	if err != nil {
 		return err
 	}
@@ -135,7 +153,7 @@ func (oe openshiftExtension) PreReconcile(ctx context.Context, comp v1alpha1.Tek
 		}
 
 		if err := createInstallerSet(ctx, oe.operatorClientSet, tp, oe.manifest, oe.version,
-			prePipelineInstallerSet, "pre-pipeline"); err != nil {
+			prePipelineInstallerSet); err != nil {
 			return err
 		}
 	}
@@ -147,11 +165,15 @@ func (oe openshiftExtension) PostReconcile(ctx context.Context, comp v1alpha1.Te
 	koDataDir := os.Getenv(common.KoEnvKey)
 	pipeline := comp.(*v1alpha1.TektonPipeline)
 
+	postReconcilerLS, err := common.LabelSelector(postReconcileSelector)
+	if err != nil {
+		return err
+	}
 	// Install monitoring if metrics is enabled
 	value := findParam(pipeline.Spec.Params, enableMetricsKey)
 
 	if value == "true" {
-		exist, err := checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, pipeline, postPipelineInstallerSet)
+		exist, err := checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, pipeline, postReconcilerLS)
 		if err != nil {
 			return err
 		}
@@ -168,32 +190,35 @@ func (oe openshiftExtension) PostReconcile(ctx context.Context, comp v1alpha1.Te
 			}
 
 			if err := createInstallerSet(ctx, oe.operatorClientSet, pipeline, oe.manifest, oe.version,
-				postPipelineInstallerSet, "post-pipeline"); err != nil {
+				postPipelineInstallerSet); err != nil {
 				return err
 			}
 		}
 
 	} else {
-		return deleteInstallerSet(ctx, oe.operatorClientSet, pipeline, postPipelineInstallerSet)
+		return deleteInstallerSet(ctx, oe.operatorClientSet, pipeline, postPipelineInstallerSet, postReconcilerLS)
 	}
 
 	return nil
 }
 func (oe openshiftExtension) Finalize(ctx context.Context, comp v1alpha1.TektonComponent) error {
 	pipeline := comp.(*v1alpha1.TektonPipeline)
-
-	installerSets := pipeline.Status.ExtentionInstallerSets
-	if len(installerSets) == 0 {
-		return nil
+	postReconcilerLS, err := common.LabelSelector(postReconcileSelector)
+	if err != nil {
+		return err
 	}
-
-	for _, value := range installerSets {
-		err := oe.operatorClientSet.OperatorV1alpha1().TektonInstallerSets().Delete(ctx, value, metav1.DeleteOptions{})
-		if err != nil && !errors.IsNotFound(err) {
-			return err
-		}
+	if err := deleteInstallerSet(ctx, oe.operatorClientSet, pipeline,
+		postPipelineInstallerSet, postReconcilerLS); err != nil {
+		return err
 	}
-
+	preReconcilerLS, err := common.LabelSelector(preReconcileSelector)
+	if err != nil {
+		return err
+	}
+	if err := deleteInstallerSet(ctx, oe.operatorClientSet, pipeline,
+		prePipelineInstallerSet, preReconcilerLS); err != nil {
+		return err
+	}
 	return nil
 }
 

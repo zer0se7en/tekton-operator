@@ -23,16 +23,19 @@ import (
 	"github.com/google/go-cmp/cmp"
 	mf "github.com/manifestival/manifestival"
 	"github.com/manifestival/manifestival/fake"
+	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
+	"gotest.tools/v3/assert"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 var (
 	namespace          = clusterScopedResource("v1", "Namespace", "test-ns")
-	podSecurityPolicy  = clusterScopedResource("policy/v1beta1", "PodSecurityPolicy", "test-pod-security-policy")
 	clusterRole        = clusterScopedResource("rbac.authorization.k8s.io/v1", "ClusterRole", "test-cluster-role")
 	role               = namespacedResource("rbac.authorization.k8s.io/v1", "Role", "test", "test-role")
 	serviceAccount     = namespacedResource("v1", "ServiceAccount", "test", "test-service-account")
@@ -50,7 +53,10 @@ var (
 
 type fakeClient struct {
 	err            error
+	getErr         error
+	createErr      error
 	resourcesExist bool
+	gets           []unstructured.Unstructured
 	creates        []unstructured.Unstructured
 	deletes        []unstructured.Unstructured
 }
@@ -58,9 +64,14 @@ type fakeClient struct {
 func (f *fakeClient) Get(obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	var resource *unstructured.Unstructured
 	if f.resourcesExist {
-		resource = &unstructured.Unstructured{}
+		for _, item := range f.gets {
+			if obj.GetKind() == item.GetKind() && obj.GetName() == item.GetName() {
+				return &item, nil
+			}
+		}
+
 	}
-	return resource, f.err
+	return resource, f.getErr
 }
 
 func (f *fakeClient) Delete(obj *unstructured.Unstructured, options ...mf.DeleteOption) error {
@@ -71,7 +82,7 @@ func (f *fakeClient) Delete(obj *unstructured.Unstructured, options ...mf.Delete
 func (f *fakeClient) Create(obj *unstructured.Unstructured, options ...mf.ApplyOption) error {
 	obj.SetAnnotations(nil) // Deleting the extra annotation. Irrelevant for the test.
 	f.creates = append(f.creates, *obj)
-	return f.err
+	return f.createErr
 }
 
 func (f *fakeClient) Update(obj *unstructured.Unstructured, options ...mf.ApplyOption) error {
@@ -94,8 +105,8 @@ func clusterScopedResource(apiVersion, kind, name string) unstructured.Unstructu
 }
 
 func TestInstaller(t *testing.T) {
-
-	in := []unstructured.Unstructured{namespace, podSecurityPolicy, deployment, clusterRole, role,
+	crd.SetDeletionTimestamp(&metav1.Time{})
+	in := []unstructured.Unstructured{namespace, deployment, clusterRole, role,
 		roleBinding, clusterRoleBinding, serviceAccount, crd, validatingWebhook, mutatingWebhook, configMap, service, hpa, secret}
 
 	client := &fakeClient{}
@@ -122,7 +133,7 @@ func TestInstaller(t *testing.T) {
 	// reset created array
 	client.creates = []unstructured.Unstructured{}
 
-	want = []unstructured.Unstructured{namespace, clusterRole, podSecurityPolicy, validatingWebhook, mutatingWebhook}
+	want = []unstructured.Unstructured{namespace, clusterRole, validatingWebhook, mutatingWebhook}
 
 	err = i.EnsureClusterScopedResources()
 	if err != nil {
@@ -137,7 +148,7 @@ func TestInstaller(t *testing.T) {
 	client.creates = []unstructured.Unstructured{}
 
 	want = []unstructured.Unstructured{serviceAccount, clusterRoleBinding, role,
-		roleBinding, configMap, secret, hpa}
+		roleBinding, configMap, secret, hpa, service}
 
 	err = i.EnsureNamespaceScopedResources()
 	if err != nil {
@@ -150,18 +161,26 @@ func TestInstaller(t *testing.T) {
 
 	// reset created array
 	client.creates = []unstructured.Unstructured{}
-
-	want = []unstructured.Unstructured{deployment, service}
+	client.resourcesExist = false
+	client.getErr = errors.NewNotFound(schema.GroupResource{
+		Group:    "apps/v1",
+		Resource: "Deployment",
+	}, "test-deployment")
 
 	err = i.EnsureDeploymentResources()
-	if err != nil {
-		t.Fatal("Unexpected Error while installing resources: ", err)
-	}
+	assert.Error(t, err, v1alpha1.RECONCILE_AGAIN_ERR.Error())
 
+	want = []unstructured.Unstructured{deployment}
 	if len(want) != len(client.creates) {
 		t.Fatalf("Unexpected creates: %s", fmt.Sprintf("(-got, +want): %s", cmp.Diff(client.creates, want)))
 	}
 
+	client.resourcesExist = true
+	client.gets = []unstructured.Unstructured{deployment}
+	err = i.EnsureDeploymentResources()
+	if err != nil {
+		t.Fatal("Unexpected Error while installing resources: ", err)
+	}
 }
 
 var (

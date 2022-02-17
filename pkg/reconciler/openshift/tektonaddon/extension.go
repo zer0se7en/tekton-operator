@@ -31,8 +31,10 @@ import (
 	"github.com/tektoncd/operator/pkg/client/clientset/versioned"
 	operatorclient "github.com/tektoncd/operator/pkg/client/injection/client"
 	"github.com/tektoncd/operator/pkg/reconciler/common"
+	"github.com/tektoncd/operator/pkg/reconciler/shared/hash"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/apis"
 	"knative.dev/pkg/injection"
@@ -84,47 +86,95 @@ func (oe openshiftExtension) PostReconcile(ctx context.Context, comp v1alpha1.Te
 	logger := logging.FromContext(ctx)
 	addon := comp.(*v1alpha1.TektonAddon)
 
-	miscellaneousManifest := oe.manifest
-	exist, err := checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, addon, miscellaneousResourcesInstallerSet)
+	miscellaneousLS := metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			v1alpha1.InstallerSetType: MiscellaneousResourcesInstallerSet,
+		},
+	}
+	miscellaneousLabelSelector, err := common.LabelSelector(miscellaneousLS)
+	if err != nil {
+		return err
+	}
+	exist, err := checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, miscellaneousLabelSelector)
 	if err != nil {
 		return err
 	}
 	if !exist {
-
-		if err := applyAddons(&miscellaneousManifest, "05-tkncliserve"); err != nil {
+		manifest, err := getMiscellaneousManifest(ctx, addon, oe.manifest, comp)
+		if err != nil {
 			return err
 		}
 
-		if err := getOptionalAddons(&miscellaneousManifest, comp); err != nil {
+		if err := createInstallerSet(ctx, oe.operatorClientSet, addon, manifest, oe.version,
+			MiscellaneousResourcesInstallerSet, "addon-openshift"); err != nil {
 			return err
 		}
-
-		images := common.ToLowerCaseKeys(common.ImagesFromEnv(common.AddonsImagePrefix))
-		extraTranformers := []mf.Transformer{
-			common.DeploymentImages(images),
-		}
-		if err := addonTransform(ctx, &miscellaneousManifest, addon, extraTranformers...); err != nil {
-			return err
-		}
-
-		if err := createInstallerSet(ctx, oe.operatorClientSet, addon, miscellaneousManifest, oe.version,
-			miscellaneousResourcesInstallerSet, "addon-openshift"); err != nil {
-			return err
-		}
-	}
-
-	existingInstallerSet, ok := addon.Status.AddonsInstallerSet[miscellaneousResourcesInstallerSet]
-	if !ok {
 		return v1alpha1.RECONCILE_AGAIN_ERR
 	}
+
+	// Check if installer set is already created
+	installedTIS, err := oe.operatorClientSet.OperatorV1alpha1().TektonInstallerSets().
+		List(ctx, metav1.ListOptions{
+			LabelSelector: miscellaneousLabelSelector,
+		})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			manifest, err := getMiscellaneousManifest(ctx, addon, oe.manifest, comp)
+			if err != nil {
+				return err
+			}
+
+			if err := createInstallerSet(ctx, oe.operatorClientSet, addon, manifest, oe.version,
+				MiscellaneousResourcesInstallerSet, "addon-openshift"); err != nil {
+				return err
+			}
+			return v1alpha1.RECONCILE_AGAIN_ERR
+		}
+		logger.Error("failed to get InstallerSet: %s", err)
+		return err
+	}
+
+	expectedSpecHash, err := hash.Compute(addon.Spec)
+	if err != nil {
+		return err
+	}
+
+	// spec hash stored on installerSet
+	lastAppliedHash := installedTIS.Items[0].GetAnnotations()[v1alpha1.LastAppliedHashKey]
+
+	if lastAppliedHash != expectedSpecHash {
+
+		manifest, err := getMiscellaneousManifest(ctx, addon, oe.manifest, comp)
+		if err != nil {
+			return err
+		}
+
+		// Update the spec hash
+		current := installedTIS.Items[0].GetAnnotations()
+		current[v1alpha1.LastAppliedHashKey] = expectedSpecHash
+		installedTIS.Items[0].SetAnnotations(current)
+
+		// Update the manifests
+		installedTIS.Items[0].Spec.Manifests = manifest.Resources()
+
+		if _, err = oe.operatorClientSet.OperatorV1alpha1().TektonInstallerSets().
+			Update(ctx, &installedTIS.Items[0], metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+
+		return v1alpha1.RECONCILE_AGAIN_ERR
+	}
+
 	installedAddonIS, err := oe.operatorClientSet.OperatorV1alpha1().TektonInstallerSets().
-		Get(ctx, existingInstallerSet, metav1.GetOptions{})
+		List(ctx, metav1.ListOptions{
+			LabelSelector: miscellaneousLabelSelector,
+		})
 	if err != nil {
 		logger.Error("failed to get InstallerSet: %s", err)
 		return err
 	}
 
-	ready := installedAddonIS.Status.GetCondition(apis.ConditionReady)
+	ready := installedAddonIS.Items[0].Status.GetCondition(apis.ConditionReady)
 	if ready == nil {
 		return v1alpha1.RECONCILE_AGAIN_ERR
 	}
@@ -134,7 +184,17 @@ func (oe openshiftExtension) PostReconcile(ctx context.Context, comp v1alpha1.Te
 	}
 
 	consolecliManifest := oe.manifest
-	exist, err = checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, addon, consoleCLIInstallerSet)
+
+	consoleCLILS := metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			v1alpha1.InstallerSetType: ConsoleCLIInstallerSet,
+		},
+	}
+	consoleCLILabelSelector, err := common.LabelSelector(consoleCLILS)
+	if err != nil {
+		return err
+	}
+	exist, err = checkIfInstallerSetExist(ctx, oe.operatorClientSet, oe.version, consoleCLILabelSelector)
 	if err != nil {
 		return err
 	}
@@ -157,7 +217,7 @@ func (oe openshiftExtension) PostReconcile(ctx context.Context, comp v1alpha1.Te
 		}
 
 		if err := createInstallerSet(ctx, oe.operatorClientSet, addon, consolecliManifest, oe.version,
-			consoleCLIInstallerSet, "addon-consolecli"); err != nil {
+			ConsoleCLIInstallerSet, "addon-consolecli"); err != nil {
 			return err
 		}
 	}
@@ -171,12 +231,12 @@ func (oe openshiftExtension) Finalize(context.Context, v1alpha1.TektonComponent)
 func getOptionalAddons(manifest *mf.Manifest, comp v1alpha1.TektonComponent) error {
 	koDataDir := os.Getenv(common.KoEnvKey)
 
-	optionalLocation := filepath.Join(koDataDir, "tekton-addon/"+common.TargetVersion(comp)+"/optional/samples")
+	optionalLocation := filepath.Join(koDataDir, "tekton-addon", "optional", "samples")
 	if err := common.AppendManifest(manifest, optionalLocation); err != nil {
 		return err
 	}
 
-	optionalLocation = filepath.Join(koDataDir, "tekton-addon/"+common.TargetVersion(comp)+"/optional/quickstarts")
+	optionalLocation = filepath.Join(koDataDir, "tekton-addon", "optional", "quickstarts")
 	return common.AppendManifest(manifest, optionalLocation)
 }
 
@@ -220,4 +280,24 @@ func getRouteHost(manifest *mf.Manifest) (string, error) {
 		}
 	}
 	return hostUrl, nil
+}
+
+func getMiscellaneousManifest(ctx context.Context, addon *v1alpha1.TektonAddon, miscellaneousManifest mf.Manifest, comp v1alpha1.TektonComponent) (mf.Manifest, error) {
+	if err := applyAddons(&miscellaneousManifest, "05-tkncliserve"); err != nil {
+		return mf.Manifest{}, err
+	}
+
+	if err := getOptionalAddons(&miscellaneousManifest, comp); err != nil {
+		return mf.Manifest{}, err
+	}
+
+	images := common.ToLowerCaseKeys(common.ImagesFromEnv(common.AddonsImagePrefix))
+	extraTranformers := []mf.Transformer{
+		common.DeploymentImages(images),
+		common.AddConfiguration(addon.Spec.Config),
+	}
+	if err := addonTransform(ctx, &miscellaneousManifest, addon, extraTranformers...); err != nil {
+		return mf.Manifest{}, err
+	}
+	return miscellaneousManifest, nil
 }

@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-	"time"
 
 	mfc "github.com/manifestival/client-go-client"
 	mf "github.com/manifestival/manifestival"
@@ -50,9 +49,7 @@ func EnsureTektonConfigExists(kubeClientSet *kubernetes.Clientset, clients confi
 	}
 
 	tcCR, err := clients.Get(context.TODO(), names.TektonConfig, metav1.GetOptions{})
-	// this timeout is needed to make sure that the e2e tests work
-	// TODO: https://github.com/tektoncd/operator/issues/401
-	time.Sleep(120 * time.Second)
+
 	if cm.Data["AUTOINSTALL_COMPONENTS"] == "true" {
 		if err != nil {
 			return nil, err
@@ -122,9 +119,11 @@ func AssertTektonConfigCRReadyStatus(t *testing.T, clients *utils.Clients, names
 	}
 }
 
-// TektonConfigCRDelete deletes tha TektonConfig to see if all resources will be deleted
-func TektonConfigCRDelete(t *testing.T, clients *utils.Clients, crNames utils.ResourceNames) {
+func EnsureNoTektonConfigInstance(t *testing.T, clients *utils.Clients, crNames utils.ResourceNames) {
 	if err := clients.TektonConfig().Delete(context.TODO(), crNames.TektonConfig, metav1.DeleteOptions{}); err != nil {
+		if apierrs.IsNotFound(err) {
+			return
+		}
 		t.Fatalf("TektonConfig %q failed to delete: %v", crNames.TektonConfig, err)
 	}
 	err := wait.PollImmediate(Interval, Timeout, func() (bool, error) {
@@ -137,6 +136,11 @@ func TektonConfigCRDelete(t *testing.T, clients *utils.Clients, crNames utils.Re
 	if err != nil {
 		t.Fatal("Timed out waiting on TektonConfig to delete", err)
 	}
+}
+
+// TektonConfigCRDelete deletes tha TektonConfig to see if all resources will be deleted
+func TektonConfigCRDelete(t *testing.T, clients *utils.Clients, crNames utils.ResourceNames) {
+	EnsureNoTektonConfigInstance(t, clients, crNames)
 	_, b, _, _ := runtime.Caller(0)
 	m, err := mfc.NewManifest(filepath.Join((filepath.Dir(b)+"/.."), "manifests/"), clients.Config)
 	if err != nil {

@@ -67,8 +67,8 @@ func makeInstallerSet(tc *v1alpha1.TektonConfig, name, releaseVersion string, la
 			Name:   name,
 			Labels: labels,
 			Annotations: map[string]string{
-				releaseVersionKey:  releaseVersion,
-				targetNamespaceKey: tc.Spec.TargetNamespace,
+				v1alpha1.ReleaseVersionKey:  releaseVersion,
+				v1alpha1.TargetNamespaceKey: tc.Spec.TargetNamespace,
 			},
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},
@@ -122,7 +122,7 @@ func checkIfInstallerSetExist(ctx context.Context, oc versioned.Interface, relVe
 			return false, err
 		}
 
-		if version, ok := ctIs.Annotations[releaseVersionKey]; ok && version == relVersion {
+		if version, ok := ctIs.Annotations[v1alpha1.ReleaseVersionKey]; ok && version == relVersion {
 			// if installer set already exist and release version is same
 			// then ignore and move on
 			return true, nil

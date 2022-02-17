@@ -24,6 +24,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/tektoncd/operator/pkg/reconciler/common"
+
 	mfc "github.com/manifestival/client-go-client"
 	mf "github.com/manifestival/manifestival"
 
@@ -34,6 +36,7 @@ import (
 
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	addonv1alpha1 "github.com/tektoncd/operator/pkg/client/clientset/versioned/typed/operator/v1alpha1"
+	"github.com/tektoncd/operator/pkg/reconciler/openshift/tektonaddon"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -88,6 +91,37 @@ func AssertTektonAddonCRReadyStatus(t *testing.T, clients *utils.Clients, names 
 	if _, err := WaitForTektonAddonState(clients.TektonAddon(), names.TektonAddon,
 		IsTektonAddonReady); err != nil {
 		t.Fatalf("TektonAddonCR %q failed to get to the READY status: %v", names.TektonAddon, err)
+	}
+}
+
+// AssertTektonInstallerSets verifies if the TektonInstallerSets are created.
+func AssertTektonInstallerSets(t *testing.T, clients *utils.Clients) {
+	assertInstallerSets(t, clients, tektonaddon.ClusterTaskInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.VersionedClusterTaskInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.PipelinesTemplateInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.TriggersResourcesInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.ConsoleCLIInstallerSet)
+	assertInstallerSets(t, clients, tektonaddon.MiscellaneousResourcesInstallerSet)
+}
+
+func assertInstallerSets(t *testing.T, clients *utils.Clients, component string) {
+	ls := metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			v1alpha1.InstallerSetType: component,
+		},
+	}
+	labelSelector, err := common.LabelSelector(ls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installerSets, err := clients.TektonInstallerSet().List(context.TODO(), metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		t.Fatalf("failed to get TektonInstallerSet for %s : %v", component, err)
+	}
+	if len(installerSets.Items) > 1 {
+		t.Fatalf("multiple installer sets for %s TektonInstallerSet", component)
 	}
 }
 

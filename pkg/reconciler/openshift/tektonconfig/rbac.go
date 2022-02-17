@@ -42,10 +42,7 @@ const (
 	trustedCABundleConfigMap = "config-trusted-cabundle"
 	clusterInterceptors      = "openshift-pipelines-clusterinterceptors"
 	namespaceVersionLabel    = "openshift-pipelines.tekton.dev/namespace-reconcile-version"
-	createdByKey             = "operator.tekton.dev/created-by"
 	createdByValue           = "RBAC"
-	releaseVersionKey        = "operator.tekton.dev/release-version"
-	targetNamespaceKey       = "operator.tekton.dev/target-namespace"
 	componentName            = "rhosp-rbac"
 	rbacParamName            = "createRbacResource"
 )
@@ -141,7 +138,7 @@ func (r *rbac) createResources(ctx context.Context) error {
 	}
 	if !exist {
 		if err := createInstallerSet(ctx, r.operatorClientSet, r.tektonConfig, map[string]string{
-			createdByKey: createdByValue,
+			v1alpha1.CreatedByKey: createdByValue,
 		}, r.version, componentName, "rbac-resources"); err != nil {
 			return err
 		}

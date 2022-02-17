@@ -25,3 +25,5 @@ resources:
 - role.yaml
 - role_binding.yaml
 - operator.yaml
+- tekton_config_role.yaml
+- tekton_config_role_binding.yaml

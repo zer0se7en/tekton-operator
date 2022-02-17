@@ -33,6 +33,7 @@ func TestTektonDashboardsDeployment(t *testing.T) {
 	clients := client.Setup(t)
 
 	crNames := utils.ResourceNames{
+		TektonConfig:    "config",
 		TektonPipeline:  "pipeline",
 		TektonDashboard: "dashboard",
 		TargetNamespace: "tekton-pipelines",
@@ -43,6 +44,8 @@ func TestTektonDashboardsDeployment(t *testing.T) {
 
 	utils.CleanupOnInterrupt(func() { utils.TearDownDashboard(clients, crNames.TektonDashboard) })
 	defer utils.TearDownDashboard(clients, crNames.TektonDashboard)
+
+	resources.EnsureNoTektonConfigInstance(t, clients, crNames)
 
 	// Create a TektonPipeline
 	if _, err := resources.EnsureTektonPipelineExists(clients.TektonPipeline(), crNames); err != nil {
@@ -69,6 +72,11 @@ func TestTektonDashboardsDeployment(t *testing.T) {
 		resources.AssertTektonDashboardCRReadyStatus(t, clients, crNames)
 		resources.DeleteAndVerifyDeployments(t, clients, crNames.TargetNamespace, utils.TektonDashboardDeploymentLabel)
 		resources.AssertTektonDashboardCRReadyStatus(t, clients, crNames)
+	})
+
+	// Test if TektonInstallerSets are created.
+	t.Run("verify-dashboard-installersets", func(t *testing.T) {
+		resources.AssertDashboardInstallerSets(t, clients)
 	})
 
 	// Delete the TektonDashboard CR instance to see if all resources will be removed

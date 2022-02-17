@@ -19,25 +19,22 @@ package tektondashboard
 import (
 	"context"
 
-	"github.com/go-logr/zapr"
-	mfc "github.com/manifestival/client-go-client"
-	mf "github.com/manifestival/manifestival"
-	"go.uber.org/zap"
-	"k8s.io/client-go/tools/cache"
-
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	operatorclient "github.com/tektoncd/operator/pkg/client/injection/client"
 	tektonDashboardinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektondashboard"
+	tektonInstallerinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektoninstallerset"
 	tektonPipelineinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektonpipeline"
 	tektonDashboardreconciler "github.com/tektoncd/operator/pkg/client/injection/reconciler/operator/v1alpha1/tektondashboard"
 	"github.com/tektoncd/operator/pkg/reconciler/common"
+	"k8s.io/client-go/tools/cache"
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
-	deploymentinformer "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/injection"
 	"knative.dev/pkg/logging"
 )
+
+const versionConfigMap = "dashboard-info"
 
 // NewController initializes the controller and is called by the generated code
 // Registers eventhandlers to enqueue events
@@ -50,35 +47,44 @@ func NewExtendedController(generator common.ExtensionGenerator) injection.Contro
 	return func(ctx context.Context, cmw configmap.Watcher) *controller.Impl {
 		tektonPipelineInformer := tektonPipelineinformer.Get(ctx)
 		tektonDashboardInformer := tektonDashboardinformer.Get(ctx)
-		deploymentInformer := deploymentinformer.Get(ctx)
 		kubeClient := kubeclient.Get(ctx)
 		logger := logging.FromContext(ctx)
 
-		mfclient, err := mfc.NewClient(injection.GetConfig(ctx))
-		if err != nil {
-			logger.Fatalw("Error creating client from injected config", zap.Error(err))
+		ctrl := common.Controller{
+			Logger:           logger,
+			VersionConfigMap: versionConfigMap,
 		}
-		mflogger := zapr.NewLogger(logger.Named("manifestival").Desugar())
-		manifest, err := mf.ManifestFrom(mf.Slice{}, mf.UseClient(mfclient), mf.UseLogger(mflogger))
+
+		readonlyManifest, dashboardVer := ctrl.InitController(ctx, common.PayloadOptions{ReadOnly: true})
+
+		fullaccessManifest, _ := ctrl.InitController(ctx, common.PayloadOptions{ReadOnly: false})
+
+		operatorVer, err := common.OperatorVersion(ctx)
 		if err != nil {
-			logger.Fatalw("Error creating initial manifest", zap.Error(err))
+			logger.Fatal(err)
 		}
 
 		c := &Reconciler{
-			kubeClientSet:     kubeClient,
-			operatorClientSet: operatorclient.Get(ctx),
-			extension:         generator(ctx),
-			manifest:          manifest,
-			pipelineInformer:  tektonPipelineInformer,
+			kubeClientSet:      kubeClient,
+			operatorClientSet:  operatorclient.Get(ctx),
+			extension:          generator(ctx),
+			readonlyManifest:   readonlyManifest,
+			fullaccessManifest: fullaccessManifest,
+			pipelineInformer:   tektonPipelineInformer,
+			dashboardVersion:   dashboardVer,
+			operatorVersion:    operatorVer,
 		}
 		impl := tektonDashboardreconciler.NewImpl(ctx, c)
 
-		logger.Info("Setting up event handlers")
+		// Add enqueue func in reconciler
+		c.enqueueAfter = impl.EnqueueAfter
+
+		logger.Info("Setting up event handlers for tekton-dashboard")
 
 		tektonDashboardInformer.Informer().AddEventHandler(controller.HandleAll(impl.Enqueue))
 
-		deploymentInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
-			FilterFunc: controller.FilterControllerGVK(v1alpha1.SchemeGroupVersion.WithKind("TektonDashboard")),
+		tektonInstallerinformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: controller.FilterController(&v1alpha1.TektonDashboard{}),
 			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
 		})
 

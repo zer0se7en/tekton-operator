@@ -47,9 +47,10 @@ func (tp *TektonAddon) GetStatus() TektonComponentStatus {
 // TektonAddonSpec defines the desired state of TektonAddon
 type TektonAddonSpec struct {
 	CommonSpec `json:",inline"`
-	// The params to customize different components of Addon
+	Addon      `json:",inline"`
+	// Config holds the configuration for resources created by Addon
 	// +optional
-	Params []Param `json:"params,omitempty"`
+	Config Config `json:"config,omitempty"`
 }
 
 // TektonAddonStatus defines the observed state of TektonAddon
@@ -70,6 +71,9 @@ type Addon struct {
 	// Params is the list of params passed for Addon customization
 	// +optional
 	Params []Param `json:"params,omitempty"`
+	// EnablePAC field defines whether to install PAC
+	// +optional
+	EnablePAC *bool `json:"enablePipelinesAsCode,omitempty"`
 }
 
 func (a Addon) IsEmpty() bool {

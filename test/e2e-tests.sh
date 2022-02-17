@@ -26,14 +26,13 @@ KUBECONFIG_PARAM=${KUBECONFIG:+"--kubeconfig $KUBECONFIG"}
 
 echo "Running tests on ${TARGET}"
 
-[[ -z ${E2E_DEBUG} ]] && initialize $@
+[[ -z ${E2E_SKIP_CLUSTER_CREATION} ]] && initialize $@
 failed=0
 
 header "Setting up environment"
-install_operator_resources
+[[ -z ${E2E_SKIP_OPERATOR_INSTALLATION} ]] && install_operator_resources
 
-echo "Wait for TektonConfig creation"
-sleep 30
+tektonconfig_ready_wait
 
 header "Running Go e2e tests"
 go_test_e2e -timeout=20m ./test/e2e/common ${KUBECONFIG_PARAM} || failed=1

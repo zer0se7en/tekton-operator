@@ -17,12 +17,12 @@ limitations under the License.
 package common
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	informer "github.com/tektoncd/operator/pkg/client/informers/externalversions/operator/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -49,11 +49,15 @@ func PipelineReady(informer informer.TektonPipelineInformer) (*v1alpha1.TektonPi
 		}
 		return nil, err
 	}
-
-	if len(ppln.Status.Conditions) != 0 {
-		if ppln.Status.Conditions[0].Status != corev1.ConditionTrue {
-			return nil, fmt.Errorf(PipelineNotReady)
-		}
+	upgradePending, err := CheckUpgradePending(ppln)
+	if err != nil {
+		return nil, err
+	}
+	if upgradePending {
+		return nil, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
+	}
+	if !ppln.Status.IsReady() {
+		return nil, fmt.Errorf(PipelineNotReady)
 	}
 	return ppln, nil
 }
@@ -71,11 +75,15 @@ func TriggerReady(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrig
 		}
 		return nil, err
 	}
-
-	if len(trigger.Status.Conditions) != 0 {
-		if trigger.Status.Conditions[0].Status != corev1.ConditionTrue {
-			return nil, fmt.Errorf(TriggerNotReady)
-		}
+	upgradePending, err := CheckUpgradePending(trigger)
+	if err != nil {
+		return nil, err
+	}
+	if upgradePending {
+		return nil, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
+	}
+	if !trigger.Status.IsReady() {
+		return nil, fmt.Errorf(TriggerNotReady)
 	}
 	return trigger, nil
 }
@@ -83,4 +91,20 @@ func TriggerReady(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrig
 func getTriggerRes(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrigger, error) {
 	res, err := informer.Lister().Get(v1alpha1.TriggerResourceName)
 	return res, err
+}
+
+func CheckUpgradePending(tc v1alpha1.TektonComponent) (bool, error) {
+	labels := tc.GetLabels()
+	ver, ok := labels[v1alpha1.ReleaseVersionKey]
+	if !ok {
+		return true, nil
+	}
+	operatorVersion, err := OperatorVersion(context.TODO())
+	if err != nil {
+		return false, err
+	}
+	if ver != operatorVersion {
+		return true, nil
+	}
+	return false, nil
 }
