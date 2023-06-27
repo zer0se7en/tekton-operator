@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"context"
+
 	"knative.dev/pkg/apis"
 )
 
@@ -33,6 +35,24 @@ func validateHubParams(params []Param, pathToParams string) *apis.FieldError {
 			path := pathToParams + "." + p.Name
 			errs = errs.Also(apis.ErrInvalidArrayValue(p.Value, path, i))
 		}
+	}
+
+	return errs
+}
+
+func (th *TektonHub) Validate(ctx context.Context) (errs *apis.FieldError) {
+	if apis.IsInDelete(ctx) {
+		return nil
+	}
+
+	// validate database secret name
+	if th.Spec.Db.DbSecretName != "" && th.Spec.Db.DbSecretName != HubDbSecretName {
+		errs = errs.Also(apis.ErrInvalidValue(th.Spec.Db.DbSecretName, "spec.db.secret"))
+	}
+
+	// validate api secret name
+	if th.Spec.Api.ApiSecretName != "" && th.Spec.Api.ApiSecretName != HubApiSecretName {
+		errs = errs.Also(apis.ErrInvalidValue(th.Spec.Api.ApiSecretName, "spec.api.secret"))
 	}
 
 	return errs

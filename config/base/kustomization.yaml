@@ -18,7 +18,10 @@ resources:
 - 300-operator_v1alpha1_pipeline_crd.yaml
 - 300-operator_v1alpha1_trigger_crd.yaml
 - 300-operator_v1alpha1_config_crd.yaml
+- 300-operator_v1alpha1_chain_crd.yaml
+- 300-operator_v1alpha1_result_crd.yaml
 - 300-operator_v1alpha1_installer_set_crd.yaml
+- 300-operator_v1alpha1_hub_crd.yaml
 - config-logging.yaml
 - config-observability.yaml
 - tekton-config-defaults.yaml
@@ -27,3 +30,6 @@ resources:
 - operator.yaml
 - tekton_config_role.yaml
 - tekton_config_role_binding.yaml
+- config-info.yaml
+- config-info_role.yaml
+- config-info_role_binding.yaml

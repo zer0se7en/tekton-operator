@@ -35,39 +35,29 @@ func (ps *PipelineSpec) SetDefaults(ctx context.Context) {
 	for i := range ps.Params {
 		ps.Params[i].SetDefaults(ctx)
 	}
-	if config.FromContextOrDefaults(ctx).FeatureFlags.EnableAPIFields == "alpha" {
-		ctx = addContextParamSpec(ctx, ps.Params)
-		ps.Params = getContextParamSpecs(ctx)
-	}
-	for i, pt := range ps.Tasks {
-		ctx := ctx // Ensure local scoping per Task
-		if config.FromContextOrDefaults(ctx).FeatureFlags.EnableAPIFields == "alpha" {
-			ctx = addContextParams(ctx, pt.Params)
-			ps.Tasks[i].Params = getContextParams(ctx, pt.Params...)
-		}
-		if pt.TaskRef != nil {
-			if pt.TaskRef.Kind == "" {
-				pt.TaskRef.Kind = NamespacedTaskKind
-			}
-		}
-		if pt.TaskSpec != nil {
-			pt.TaskSpec.SetDefaults(ctx)
-		}
+
+	for _, pt := range ps.Tasks {
+		pt.SetDefaults(ctx)
 	}
 
-	for i, ft := range ps.Finally {
+	for _, ft := range ps.Finally {
 		ctx := ctx // Ensure local scoping per Task
-		if config.FromContextOrDefaults(ctx).FeatureFlags.EnableAPIFields == "alpha" {
-			ctx = addContextParams(ctx, ft.Params)
-			ps.Finally[i].Params = getContextParams(ctx, ft.Params...)
+		ft.SetDefaults(ctx)
+	}
+}
+
+// SetDefaults sets default values for a PipelineTask
+func (pt *PipelineTask) SetDefaults(ctx context.Context) {
+	cfg := config.FromContextOrDefaults(ctx)
+	if pt.TaskRef != nil {
+		if pt.TaskRef.Kind == "" {
+			pt.TaskRef.Kind = NamespacedTaskKind
 		}
-		if ft.TaskRef != nil {
-			if ft.TaskRef.Kind == "" {
-				ft.TaskRef.Kind = NamespacedTaskKind
-			}
+		if pt.TaskRef.Name == "" && pt.TaskRef.Resolver == "" {
+			pt.TaskRef.Resolver = ResolverName(cfg.Defaults.DefaultResolverType)
 		}
-		if ft.TaskSpec != nil {
-			ft.TaskSpec.SetDefaults(ctx)
-		}
+	}
+	if pt.TaskSpec != nil {
+		pt.TaskSpec.SetDefaults(ctx)
 	}
 }

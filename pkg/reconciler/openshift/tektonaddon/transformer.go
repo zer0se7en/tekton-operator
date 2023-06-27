@@ -31,21 +31,12 @@ func replaceKind(fromKind, toKind string) mf.Transformer {
 		if kind != fromKind {
 			return nil
 		}
-		err := unstructured.SetNestedField(u.Object, toKind, "kind")
-		if err != nil {
-			return fmt.Errorf(
-				"failed to change resource Name:%s, KIND from %s to %s, %s",
-				u.GetName(),
-				fromKind,
-				toKind,
-				err,
-			)
-		}
+		u.SetKind(toKind)
 		return nil
 	}
 }
 
-//injectLabel adds label key:value to a resource
+// injectLabel adds label key:value to a resource
 // overwritePolicy (Retain/Overwrite) decides whehther to overwrite an already existing label
 // []kinds specify the Kinds on which the label should be applied
 // if len(kinds) = 0, label will be apllied to all/any resources irrespective of its Kind
@@ -85,23 +76,29 @@ func itemInSlice(item string, items []string) bool {
 	return false
 }
 
-func getlinks(baseURL string) []console.CLIDownloadLink {
-	platforms := []struct {
-		key   string
-		value string
+func getlinks(baseURL, tknVersion string) []console.CLIDownloadLink {
+	platformURLs := []struct {
+		platform string
+		tknURL   string
 	}{
-		{"Linux", "tkn/tkn-linux-amd64-0.21.0.tar.gz"},
-		{"IBM Power", "tkn/tkn-linux-ppc64le-0.21.0.tar.gz"},
-		{"IBM Z", "tkn/tkn-linux-s390x-0.21.0.tar.gz"},
-		{"Mac", "tkn/tkn-macos-amd64-0.21.0.tar.gz"},
-		{"Windows", "tkn/tkn-windows-amd64-0.21.0.zip"},
+		{"Linux x86_64", "tkn/tkn-linux-amd64.tar.gz"},
+		{"Linux ARM 64", "tkn/tkn-linux-arm64.tar.gz"},
+		{"IBM Power", "tkn/tkn-linux-ppc64le.tar.gz"},
+		{"IBM Z", "tkn/tkn-linux-s390x.tar.gz"},
+		{"Mac x86_64", "tkn/tkn-macos-amd64.tar.gz"},
+		{"Mac ARM 64", "tkn/tkn-macos-arm64.tar.gz"},
+		{"Windows x86_64", "tkn/tkn-windows-amd64.zip"},
+		{"Windows ARM 64", "tkn/tkn-windows-arm64.zip"},
 	}
 	links := []console.CLIDownloadLink{}
-	for _, platform := range platforms {
-		links = append(links, console.CLIDownloadLink{
-			Href: getURL(baseURL, platform.value),
-			Text: fmt.Sprintf("Download tkn for %s", platform.key),
-		})
+	for _, platformURL := range platformURLs {
+		links = append(links,
+			// tkn and tkn-pac, single archive
+			console.CLIDownloadLink{
+				Href: getURL(baseURL, platformURL.tknURL),
+				Text: fmt.Sprintf("Download tkn and tkn-pac for %s", platformURL.platform),
+			},
+		)
 	}
 	return links
 }
@@ -110,7 +107,7 @@ func getURL(baseURL string, path string) string {
 	return fmt.Sprintf("https://%s/%s", baseURL, path)
 }
 
-func replaceURLCCD(baseURL string) mf.Transformer {
+func replaceURLCCD(baseURL, tknVersion string) mf.Transformer {
 	return func(u *unstructured.Unstructured) error {
 		if u.GetKind() != "ConsoleCLIDownload" {
 			return nil
@@ -120,12 +117,25 @@ func replaceURLCCD(baseURL string) mf.Transformer {
 		if err != nil {
 			return err
 		}
-		ccd.Spec.Links = getlinks(baseURL)
+		ccd.Spec.Links = getlinks(baseURL, tknVersion)
 		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(ccd)
 		if err != nil {
 			return err
 		}
 		u.SetUnstructuredContent(unstrObj)
+		return nil
+	}
+}
+
+func setVersionedNames(operatorVersion string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "ClusterTask" {
+			return nil
+		}
+		name := u.GetName()
+		formattedVersion := formattedVersionMajorMinorX(operatorVersion, versionedClusterTaskPatchChar)
+		name = fmt.Sprintf("%s-%s", name, formattedVersion)
+		u.SetName(name)
 		return nil
 	}
 }

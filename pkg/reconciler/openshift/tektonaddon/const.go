@@ -18,11 +18,17 @@ package tektonaddon
 
 const (
 	ClusterTaskInstallerSet            = "ClusterTask"
+	OpenShiftConsoleInstallerSet       = "OpenShiftConsole"
+	CommunityClusterTaskInstallerSet   = "CommunityClusterTask"
 	VersionedClusterTaskInstallerSet   = "VersionedClusterTask"
+	versionedClusterTaskPatchChar      = "0"
 	PipelinesTemplateInstallerSet      = "PipelinesTemplate"
 	TriggersResourcesInstallerSet      = "TriggersResources"
 	ConsoleCLIInstallerSet             = "ConsoleCLI"
+	ConsoleHubLinkInstallerSet         = "ConsoleHub"
 	MiscellaneousResourcesInstallerSet = "MiscellaneousResources"
 	PACInstallerSet                    = "PipelinesAsCode"
 	CreatedByValue                     = "TektonAddon"
+	KindTask                           = "Task"
+	KindClusterTask                    = "ClusterTask"
 )

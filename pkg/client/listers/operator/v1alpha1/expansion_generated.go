@@ -18,9 +18,17 @@ limitations under the License.
 
 package v1alpha1
 
+// OpenShiftPipelinesAsCodeListerExpansion allows custom methods to be added to
+// OpenShiftPipelinesAsCodeLister.
+type OpenShiftPipelinesAsCodeListerExpansion interface{}
+
 // TektonAddonListerExpansion allows custom methods to be added to
 // TektonAddonLister.
 type TektonAddonListerExpansion interface{}
+
+// TektonChainListerExpansion allows custom methods to be added to
+// TektonChainLister.
+type TektonChainListerExpansion interface{}
 
 // TektonConfigListerExpansion allows custom methods to be added to
 // TektonConfigLister.
@@ -29,6 +37,10 @@ type TektonConfigListerExpansion interface{}
 // TektonDashboardListerExpansion allows custom methods to be added to
 // TektonDashboardLister.
 type TektonDashboardListerExpansion interface{}
+
+// TektonHubListerExpansion allows custom methods to be added to
+// TektonHubLister.
+type TektonHubListerExpansion interface{}
 
 // TektonInstallerSetListerExpansion allows custom methods to be added to
 // TektonInstallerSetLister.

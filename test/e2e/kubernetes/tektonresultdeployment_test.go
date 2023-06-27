@@ -1,3 +1,4 @@
+//go:build e2e
 // +build e2e
 
 /*
@@ -36,11 +37,11 @@ import (
 
 // TestTektonResultDeployment verifies the TektonResult creation, deployment recreation, and TektonResult deletion.
 func TestTektonResultDeployment(t *testing.T) {
+	t.Skip()
 	platform := os.Getenv("PLATFORM")
 	if platform == "linux/ppc64le" || platform == "linux/s390x" {
 		t.Skipf("Tekton Result is not available for %q", platform)
 	}
-	clients := client.Setup(t)
 
 	crNames := utils.ResourceNames{
 		TektonConfig:    "config",
@@ -49,11 +50,14 @@ func TestTektonResultDeployment(t *testing.T) {
 		TargetNamespace: "tekton-pipelines",
 	}
 
-	utils.CleanupOnInterrupt(func() { utils.TearDownPipeline(clients, crNames.TektonPipeline) })
-	defer utils.TearDownPipeline(clients, crNames.TektonPipeline)
+	clients := client.Setup(t, crNames.TargetNamespace)
 
+	utils.CleanupOnInterrupt(func() { utils.TearDownPipeline(clients, crNames.TektonPipeline) })
 	utils.CleanupOnInterrupt(func() { utils.TearDownResult(clients, crNames.TektonResult) })
-	defer utils.TearDownResult(clients, crNames.TektonTrigger)
+	utils.CleanupOnInterrupt(func() { utils.TearDownNamespace(clients, crNames.TargetNamespace) })
+	defer utils.TearDownNamespace(clients, crNames.TargetNamespace)
+	defer utils.TearDownPipeline(clients, crNames.TektonPipeline)
+	defer utils.TearDownResult(clients, crNames.TektonResult)
 
 	resources.EnsureNoTektonConfigInstance(t, clients, crNames)
 

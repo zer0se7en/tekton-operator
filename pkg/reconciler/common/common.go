@@ -19,18 +19,12 @@ package common
 import (
 	"context"
 	"fmt"
-	"time"
+	"strings"
 
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	informer "github.com/tektoncd/operator/pkg/client/informers/externalversions/operator/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-)
-
-var (
-	Interval = 10 * time.Second
-	Timeout  = 1 * time.Minute
-	// DefaultSA is the default service account
-	DefaultSA = "pipeline"
+	"knative.dev/pkg/apis"
 )
 
 const (
@@ -49,17 +43,24 @@ func PipelineReady(informer informer.TektonPipelineInformer) (*v1alpha1.TektonPi
 		}
 		return nil, err
 	}
-	upgradePending, err := CheckUpgradePending(ppln)
-	if err != nil {
-		return nil, err
-	}
-	if upgradePending {
+	if ppln.GetStatus() != nil && strings.Contains(ppln.GetStatus().GetCondition(apis.ConditionReady).Message, v1alpha1.UpgradePending) {
 		return nil, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
 	}
 	if !ppln.Status.IsReady() {
 		return nil, fmt.Errorf(PipelineNotReady)
 	}
 	return ppln, nil
+}
+
+func PipelineTargetNamspace(informer informer.TektonPipelineInformer) (string, error) {
+	ppln, err := getPipelineRes(informer)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return ppln.Spec.TargetNamespace, nil
 }
 
 func getPipelineRes(informer informer.TektonPipelineInformer) (*v1alpha1.TektonPipeline, error) {
@@ -75,11 +76,7 @@ func TriggerReady(informer informer.TektonTriggerInformer) (*v1alpha1.TektonTrig
 		}
 		return nil, err
 	}
-	upgradePending, err := CheckUpgradePending(trigger)
-	if err != nil {
-		return nil, err
-	}
-	if upgradePending {
+	if trigger.GetStatus() != nil && strings.Contains(trigger.GetStatus().GetCondition(apis.ConditionReady).Message, v1alpha1.UpgradePending) {
 		return nil, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
 	}
 	if !trigger.Status.IsReady() {

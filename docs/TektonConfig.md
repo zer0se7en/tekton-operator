@@ -14,12 +14,15 @@ Operator provides support for installing and managing following operator compone
 - [TektonPipeline](./TektonPipeline.md)
 - [TektonTrigger](./TektonTrigger.md)
 
-Other than the above components depending on the platform operator also provides support for
 
+Other than the above components depending on the platform operator also provides support for
+- On both Kubernetes and OpenShift
+    - [TektonChain](./TektonChain.md)
 - On Kubernetes
-    - [TektonDashboard](./TekonDashboard.md)
+    - [TektonDashboard](./TektonDashboard.md)
 - On OpenShift
     - [TektonAddon](./TektonAddon.md)
+    - [OpenShiftPipelinesAsCode](./OpenShiftPipelinesAsCode.md)
 
 The TektonConfig CR provides the following features
 
@@ -34,6 +37,7 @@ The TektonConfig CR provides the following features
     config:
       nodeSelector: <>
       tolerations: []
+      priorityClassName: system-cluster-critical
     pipeline:
       disable-affinity-assistant: false
       disable-creds-init: false
@@ -48,18 +52,51 @@ The TektonConfig CR provides the following features
       metrics.taskrun.level: taskrun
       require-git-ssh-secret-known-hosts: false
       running-in-environment-with-injected-sidecars: true
+      trusted-resources-verification-no-match-policy: ignore
+      performance:
+        disable-ha: false
+        buckets: 1
+        threads-per-controller: 2
+        kube-api-qps: 5.0
+        kube-api-burst: 10
     pruner:
+      disabled: false
+      schedule: "0 8 * * *"
       resources:
-      - taskrun
-      - pipelinerun
+        - taskrun
+        - pipelinerun
       keep: 3
-      schedule: "* * * * *"
+      # keep-since: 1440
+      # NOTE: you can use either "keep" or "keep-since", not both
+  prune-per-resource: true
     hub:
       params:
         - name: enable-devconsole-integration
           value: "true"
     dashboard:
       readonly: true
+    platforms:
+      openshift:
+        pipelinesAsCode:
+          enable: true
+          settings:
+            application-name: Pipelines as Code CI
+            auto-configure-new-github-repo: "false"
+            bitbucket-cloud-check-source-ip: "true"
+            custom-console-name: ""
+            custom-console-url: ""
+            custom-console-url-pr-details: ""
+            custom-console-url-pr-tasklog: ""
+            error-detection-from-container-logs: "false"
+            error-detection-max-number-of-lines: "50"
+            error-detection-simple-regexp: ^(?P<filename>[^:]*):(?P<line>[0-9]+):(?P<column>[0-9]+):([
+              ]*)?(?P<error>.*)
+            error-log-snippet: "true"
+            hub-catalog-name: tekton
+            hub-url: https://api.hub.tekton.dev/v1
+            remote-tasks: "true"
+            secret-auto-create: "true"
+            secret-github-app-token-scoped: "true"
 ```
 Look for the particular section to understand a particular field in the spec.
 
@@ -73,12 +110,11 @@ By default, namespace would be `tekton-pipelines` for Kubernetes and `openshift-
 
 This allows user to choose which all components to install on the cluster.
 There are 3 profiles available:
-- `all`: This profile will install all components
-- `basic`:  This profile will install only TektonPipeline and TektonTrigger component
+- `all`: This profile will install all components (TektonPipeline, TektonTrigger and TektonChain)
+- `basic`:  This profile will install only TektonPipeline, TektonTrigger and TektonChain component
 - `lite`: This profile will install only TektonPipeline component
 
 On Kubernetes, `all` profile will install `TektonDashboard` and on OpenShift `TektonAddon` will be installed.
-
 
 ### Config
 
@@ -86,6 +122,7 @@ Config provides fields to configure deployments created by the Operator.
 This provides following fields:
 - [`nodeSelector`][node-selector]
 - [`tolerations`][tolerations]
+- [`priorityClassName`][priorityClassName]
 
 User can pass the required fields and this would be passed to all Operator components which will get added in all
 deployments created by Operator.
@@ -100,11 +137,13 @@ config:
     operator: "Equal"
     value: "value1"
     effect: "NoSchedule"
+  priorityClassName: system-node-critical
 ```
 
 This is an `Optional` section.
 
-
+**NOTE**: If `spec.config.priorityClassName` is used, then the required [`priorityClass`][priorityClass] is 
+expected to be created by the user to get the Tekton resources pods in running state
 ### Pipeline
 Pipeline section allows user to customize the Tekton pipeline features. This allow user to customize the values in configmaps.
 
@@ -130,27 +169,105 @@ pipeline:
   metrics.taskrun.level: taskrun
   require-git-ssh-secret-known-hosts: false
   running-in-environment-with-injected-sidecars: true
+  trusted-resources-verification-no-match-policy: ignore
+  performance:
+    disable-ha: false
+    buckets: 1
+    threads-per-controller: 2
+    kube-api-qps: 5.0
+    kube-api-burst: 10
+```
+
+
+### Chain
+
+Chain section allows user to customize the Tekton Chain features. This allows user to customize the values in configmaps
+
+Refer to [properties](https://github.com/tektoncd/operator/blob/main/docs/TektonChain.md#chain-config) section in TektonChain for available options
+
+Example:
+
+```yaml
+chain:
+  targetNamespace: tekton-pipelines
+  controllerEnvs:
+    - name: MONGO_SERVER_URL      # This is the only field supported at the moment which is optional and when added by user, it is added as env to Chains controller
+      value: #value               # This can be provided same as env field of container
+  artifacts.taskrun.format: in-toto
+  artifacts.taskrun.storage: tekton,oci (comma separated values)
+  artifacts.taskrun.signer: x509
+  artifacts.oci.storage: oci (comma separated values)
+  artifacts.oci.format: simplesigning
+  artifacts.oci.signer: x509
+  artifacts.pipelinerun.format: in-toto
+  artifacts.pipelinerun.storage: tekton,oci (comma separated values)
+  artifacts.pipelinerun.signer: x509
+  storage.gcs.bucket: #value
+  storage.oci.repository: #value
+  storage.oci.repository.insecure: #value (boolean - true/false)
+  storage.docdb.url: #value
+  storage.grafeas.projectid: #value
+  storage.grafeas.noteid: #value
+  storage.grafeas.notehint: #value
+  builder.id: #value
+  signers.x509.fulcio.enabled: #value (boolean - true/false)
+  signers.x509.fulcio.address: #value
+  signers.x509.fulcio.issuer: #value
+  signers.x509.fulcio.provider: #value
+  signers.x509.identity.token.file: #value
+  signers.x509.tuf.mirror.url: #value
+  signers.kms.kmsref: #value
+  signers.kms.kmsref.auth.address: #value
+  signers.kms.kmsref.auth.token: #value
+  signers.kms.kmsref.auth.oidc.path: #value
+  signers.kms.kmsref.auth.oidc.role: #value
+  signers.kms.kmsref.auth.spire.sock: #value
+  signers.kms.kmsref.auth.spire.audience: #value
+  transparency.enabled: #value (boolean - true/false)
+  transparency.url: #value
 ```
 
 ### Pruner
-Pruner provides auto clean up feature for the Tekton resources.
+Pruner provides auto clean up feature for the Tekton `pipelinerun` and `taskrun` resources. In the background pruner container runs `tkn` command.
 
 Example:
 ```yaml
 pruner:
+  disabled: false
+  schedule: "0 8 * * *"
   resources:
     - taskrun
     - pipelinerun
   keep: 3
-  schedule: "* * * * *"
+  # keep-since: 1440
+  # NOTE: you can use either "keep" or "keep-since", not both
+  prune-per-resource: true
 ```
-
+- `disabled` : if the value set as `true`, pruner feature will be disabled (default: `false`)
+- `schedule`: how often to run the pruner job. User can understand the schedule syntax [here][schedule].
 - `resources`: supported resources for auto prune are `taskrun` and `pipelinerun`
-- `keep`: maximum number of resources to keep while deleting removing
-- `schedule`: how often to clean up resources. User can understand the schedule syntax [here][schedule].
+- `keep`: maximum number of resources to keep while deleting or removing resources
+- `keep-since`: retain the resources younger than the specified value in minutes
+- `prune-per-resource`: if the value set as `true` (default value `false`), the `keep` applied to each resource. The resources(`pipeline` and/or `task`) taken dynamically from that namespace and applied. <br> example: in a namespace `ns-1` I have two `pipeline`, named `pipeline-1` and `pipeline-2`, the out come would be: `tkn pipelinerun delete --pipeline=my-pipeline-1 --keep=3 --namespace=ns-1`, `tkn pipelinerun delete --pipeline=my-pipeline-2 --keep=3 --namespace=ns-1`. the same way works for `task` too.<br> **We do not see any benefit by enabling `prune-per-resource=true`, when you use `keep-since`. As `keep-since` is limiting the resources by time(irrespective of resource count), there is no change on the outcome.**
 
-This is an `Optional` section.
+> ### Note:
+> if `disabled: false` and `schedule: ` with empty value, global pruner job will be disabled.
+> however, if there is a prune schedule (`operator.tekton.dev/prune.schedule`) annotation present with a value in a namespace. a namespace wide pruner jobs will be created.
 
+#### Pruner Namespace annotations
+By default pruner job will be created from the global pruner config (`spec.pruner`), though user can customize a pruner config to a specific namespace with the following annotations. If some of the annotations are not present or has invalid value, for that value, falls back to global value or skipped the namespace.
+- `operator.tekton.dev/prune.skip` - pruner job will be skipped to a namespace, if the value set as `true`
+- `operator.tekton.dev/prune.schedule` - pruner job will be created on a specific schedule
+- `operator.tekton.dev/prune.keep` - maximum number of resources will be kept
+- `operator.tekton.dev/prune.keep-since` - retain the resources younger than the specified value in minutes
+- `operator.tekton.dev/prune.prune-per-resource` - the `keep` or `keep-since` applied to each resource
+- `operator.tekton.dev/prune.resources` - can be `taskrun` and/or `pipelinerun`, both value can be specified with comma separated. example: `taskrun,pipelinerun`
+- `operator.tekton.dev/prune.strategy` - allowed values: either `keep` or `keep-since`
+
+> ### Note: 
+> if a global value is not present the following values will be consider as default value <br> 
+> `resources: pipelinerun` <br>
+> `keep: 100` <br>
 ### Addon
 
 TektonAddon install some resources along with Tekton Pipelines on the cluster. This provides few ClusterTasks, PipelineTemplates.
@@ -199,7 +316,86 @@ dashboard:
 
 This is an `Optional` section.
 
+### Resolvers
+
+As part of TektonPipelines, resolvers are installed which are by default enabled. User can disable them through TektonConfig.
+
+```yaml
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  pipeline:
+    enable-bundles-resolver: true
+    enable-cluster-resolver: true
+    enable-git-resolver: true
+    enable-hub-resolver: true
+```
+
+User can also provide resolver specific configurations through TektonConfig. The Default configurations are **not** added by default in TektonConfig.
+To override default configurations, user can provide the configurations as below. You can find the default configurations [here](https://github.com/tektoncd/pipeline/tree/main/config)
+
+```yaml
+apiVersion: operator.tekton.dev/v1alpha1
+kind: TektonConfig
+metadata:
+  name: config
+spec:
+  pipeline:
+    bundles-resolver-config:
+      default-service-account: pipelines
+    cluster-resolver-config:
+      default-namespace: cluster-resolver-test
+    enable-bundles-resolver: true
+    enable-cluster-resolver: true
+    enable-git-resolver: true
+    enable-hub-resolver: true
+    git-resolver-config:
+      server-url: localhost.com
+    hub-resolver-config:
+      default-tekton-hub-catalog: tekton
+```
+
+### OpenShiftPipelinesAsCode
+
+The PipelinesAsCode section allows you to customize the Pipelines as Code features. When you change the TektonConfig CR, the Operator automatically applies the settings to custom resources and configmaps in your installation.
+
+Some of the fields have default values, so operator will add them if the user hasn't passed in CR. Other fields which
+don't have default values unless the user specifies them. User can find those [here](https://pipelinesascode.com/docs/install/settings/#pipelines-as-code-configuration-settings).
+
+Example:
+
+```yaml
+platforms:
+  openshift:
+    pipelinesAsCode:
+      enable: true
+      settings:
+        application-name: Pipelines as Code CI
+        auto-configure-new-github-repo: "false"
+        bitbucket-cloud-check-source-ip: "true"
+        custom-console-name: ""
+        custom-console-url: ""
+        custom-console-url-pr-details: ""
+        custom-console-url-pr-tasklog: ""
+        error-detection-from-container-logs: "false"
+        error-detection-max-number-of-lines: "50"
+        error-detection-simple-regexp: ^(?P<filename>[^:]*):(?P<line>[0-9]+):(?P<column>[0-9]+):([
+          ]*)?(?P<error>.*)
+        error-log-snippet: "true"
+        hub-catalog-name: tekton
+        hub-url: https://api.hub.tekton.dev/v1
+        remote-tasks: "true"
+        secret-auto-create: "true"
+        secret-github-app-token-scoped: "true"
+```
+
+**NOTE**: OpenShiftPipelinesAsCode is currently available for the OpenShift Platform only.
 
 [node-selector]:https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
 [tolerations]:https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
 [schedule]:https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#cron-schedule-syntax
+[priorityClassName]: https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/#pod-priority
+[priorityClass]: https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/#priorityclass
+

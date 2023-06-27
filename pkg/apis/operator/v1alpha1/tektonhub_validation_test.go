@@ -44,6 +44,7 @@ func Test_ValidateTektonConfig_InvalidHubParam(t *testing.T) {
 					},
 				},
 			},
+			Pruner: Prune{Disabled: true},
 		},
 	}
 
@@ -71,9 +72,52 @@ func Test_ValidateTektonConfig_InvalidHubParamValue(t *testing.T) {
 					},
 				},
 			},
+			Pruner: Prune{Disabled: true},
 		},
 	}
 
 	err := tc.Validate(context.TODO())
 	assert.Equal(t, "invalid value: test: spec.hub.params.enable-devconsole-integration[0]", err.Error())
+}
+
+func Test_ValidateTektonHub_InvalidDbSecretName(t *testing.T) {
+
+	th := &TektonHub{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "name",
+			Namespace: "namespace",
+		},
+		Spec: TektonHubSpec{
+			Db: DbSpec{
+				DbSecretName: "invalid-value",
+			},
+			Api: ApiSpec{
+				ApiSecretName: "tekton-hub-api",
+			},
+		},
+	}
+
+	err := th.Validate(context.TODO())
+	assert.Equal(t, "invalid value: invalid-value: spec.db.secret", err.Error())
+}
+
+func Test_ValidateTektonHub_InvalidApiSecretName(t *testing.T) {
+
+	th := &TektonHub{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "name",
+			Namespace: "namespace",
+		},
+		Spec: TektonHubSpec{
+			Db: DbSpec{
+				DbSecretName: "tekton-hub-db",
+			},
+			Api: ApiSpec{
+				ApiSecretName: "invalid-value",
+			},
+		},
+	}
+
+	err := th.Validate(context.TODO())
+	assert.Equal(t, "invalid value: invalid-value: spec.api.secret", err.Error())
 }

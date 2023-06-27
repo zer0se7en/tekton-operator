@@ -30,6 +30,10 @@ spec:
         name: tekton-operator-webhook
         app: tekton-operator
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       serviceAccountName: openshift-pipelines-operator
       containers:
       - name: tekton-operator-webhook
@@ -47,6 +51,13 @@ spec:
           value: tekton-operator-webhook-certs
         - name: METRICS_DOMAIN
           value: tekton.dev/operator
+        - name: PLATFORM
+          value: "openshift"
         ports:
         - name: https-webhook
           containerPort: 8443
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL

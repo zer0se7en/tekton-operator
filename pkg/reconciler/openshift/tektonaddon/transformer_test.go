@@ -37,7 +37,7 @@ func TestUpdateConsoleCLIDownload(t *testing.T) {
 	expectedManifest, err := mf.ManifestFrom(mf.Recursive(testData))
 	assert.NilError(t, err)
 
-	newManifest, err := manifest.Transform(replaceURLCCD("testserver.com"))
+	newManifest, err := manifest.Transform(replaceURLCCD("testserver.com", "1.2.3"))
 	assert.NilError(t, err)
 
 	got := &console.ConsoleCLIDownload{}
@@ -54,5 +54,23 @@ func TestUpdateConsoleCLIDownload(t *testing.T) {
 
 	if d := cmp.Diff(expected, got); d != "" {
 		t.Errorf("failed to update consoleclidownload %s", diff.PrintWantGot(d))
+	}
+}
+
+func TestSetVersionedNames(t *testing.T) {
+	testData := path.Join("testdata", "test-versioned-clustertask-name.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	testData = path.Join("testdata", "test-versioned-clustertask-name-expected.yaml")
+	expectedManifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	operatorVersion := "v1.7.0"
+	newManifest, err := manifest.Transform(setVersionedNames(operatorVersion))
+	assert.NilError(t, err)
+
+	if d := cmp.Diff(expectedManifest.Resources(), newManifest.Resources()); d != "" {
+		t.Errorf("failed to update versioned clustertask name %s", diff.PrintWantGot(d))
 	}
 }

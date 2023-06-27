@@ -24,12 +24,18 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// OpenShiftPipelinesAsCodes returns a OpenShiftPipelinesAsCodeInformer.
+	OpenShiftPipelinesAsCodes() OpenShiftPipelinesAsCodeInformer
 	// TektonAddons returns a TektonAddonInformer.
 	TektonAddons() TektonAddonInformer
+	// TektonChains returns a TektonChainInformer.
+	TektonChains() TektonChainInformer
 	// TektonConfigs returns a TektonConfigInformer.
 	TektonConfigs() TektonConfigInformer
 	// TektonDashboards returns a TektonDashboardInformer.
 	TektonDashboards() TektonDashboardInformer
+	// TektonHubs returns a TektonHubInformer.
+	TektonHubs() TektonHubInformer
 	// TektonInstallerSets returns a TektonInstallerSetInformer.
 	TektonInstallerSets() TektonInstallerSetInformer
 	// TektonPipelines returns a TektonPipelineInformer.
@@ -51,9 +57,19 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
+// OpenShiftPipelinesAsCodes returns a OpenShiftPipelinesAsCodeInformer.
+func (v *version) OpenShiftPipelinesAsCodes() OpenShiftPipelinesAsCodeInformer {
+	return &openShiftPipelinesAsCodeInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
 // TektonAddons returns a TektonAddonInformer.
 func (v *version) TektonAddons() TektonAddonInformer {
 	return &tektonAddonInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// TektonChains returns a TektonChainInformer.
+func (v *version) TektonChains() TektonChainInformer {
+	return &tektonChainInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // TektonConfigs returns a TektonConfigInformer.
@@ -64,6 +80,11 @@ func (v *version) TektonConfigs() TektonConfigInformer {
 // TektonDashboards returns a TektonDashboardInformer.
 func (v *version) TektonDashboards() TektonDashboardInformer {
 	return &tektonDashboardInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// TektonHubs returns a TektonHubInformer.
+func (v *version) TektonHubs() TektonHubInformer {
+	return &tektonHubInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // TektonInstallerSets returns a TektonInstallerSetInformer.

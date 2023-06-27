@@ -32,6 +32,13 @@ spec:
   require-git-ssh-secret-known-hosts: false
   running-in-environment-with-injected-sidecars: true
   scope-when-expressions-to-task: false
+  trusted-resources-verification-no-match-policy: ignore
+  performance:
+    disable-ha: false
+    buckets: 1
+    threads-per-controller: 2
+    kube-api-qps: 5.0
+    kube-api-burst: 10
 ```
 You can install this component using [TektonConfig](./TektonConfig.md) by choosing appropriate `profile`.
 
@@ -45,21 +52,6 @@ them as per their need.
 
     See more in the workspace documentation about [Affinity Assistant](https://github.com/tektoncd/pipeline/blob/main/docs/workspaces.md#affinity-assistant-and-specifying-workspace-order-in-a-pipeline)
     or more info [here](https://github.com/tektoncd/pipeline/pull/2630).
-
-
-- `disable-home-env-overwrite` (Default: `true`)
-
-    Setting this flag to "false" will allow Tekton to override your Task container's $HOME environment variable.
-
-    See more info [here](https://github.com/tektoncd/pipeline/issues/2013).
-
-
-- `disable-working-directory-overwrite` (Default: `true`)
-
-    Setting this flag to "false" will allow Tekton to override your Task container's working directory.
-
-    See more info [here](https://github.com/tektoncd/pipeline/issues/1836).
-
 
 - `disable-creds-init` (Default: `false`)
 
@@ -108,6 +100,10 @@ and thus should still be considered an alpha feature.
 - `scope-when-expressions-to-task` (Default: `false`)
 
     Setting this flag to "true" scopes when expressions to guard a Task only instead of a Task and its dependent Tasks.
+
+- `trusted-resources-verification-no-match-policy` (Default: `ignore`)
+
+    Trusted Resources is a feature which can be used to sign Tekton Resources and verify them. Details of design can be found at [TEP–0091](https://github.com/tektoncd/community/blob/main/teps/0091-trusted-resources.md). This feature is under alpha version and support v1beta1 version of Task and Pipeline. To know more about this visit [pipelines documentation](https://tekton.dev/docs/pipelines/trusted-resources/)
 
 ### Metrics Properties
 These fields have default values so even if user have not passed them in CR, operator will add them and override the values
@@ -180,3 +176,35 @@ default is the only option available. If no sink is specified, no CloudEvent is 
 Task declares but that a TaskRun does not explicitly provide.
 
 [Pipeline]:https://github.com/tektoncd/pipeline
+
+### Performance Properties
+```yaml
+spec:
+  # omitted other fields ...
+  performance:
+    disable-ha: false
+    buckets: 1
+    threads-per-controller: 2
+    kube-api-qps: 5.0
+    kube-api-burst: 10
+```
+These fields are optional and there is no default values. If user passes them, operator will include most of fields into the deployment `tekton-pipelines-controller` under the container `tekton-pipelines-controller` as arguments(duplicate name? No, container and deployment has the same name), otherwise pipelines controller's default values will be considered. and `buckets` field is updated into `config-leader-election` config-map under the namespace `tekton-pipelines`.
+
+A high level descriptions are given here. To get the detailed information please visit pipelines documentation, [High Availability Support](https://tekton.dev/docs/pipelines/enabling-ha/), and [Performance Configuration](https://tekton.dev/docs/pipelines/tekton-controller-performance-configuration/)
+
+
+* `disable-ha` - enable or disable ha feature, defaults in pipelines controller is `disable-ha=false`
+* `buckets` - buckets is the number of buckets used to partition key space of each reconciler. If this number is M and the replica number of the controller is N, the N replicas will compete for the M buckets. The owner of a bucket will take care of the reconciling for the keys partitioned into that bucket. The maximum value of `buckets` at this time is `10`. default value in pipeline controller is `1`
+* `threads-per-controller` - is the number of threads(aka worker) to use when processing the pipelines controller's workqueue, default value in pipelines controller is `2`
+* `kube-api-qps` - QPS indicates the maximum QPS to the cluster master from the REST client, default value in pipeline controller is `5.0`
+* `kube-api-burst` - maximum burst for throttle, default value in pipeline controller is `10`
+
+> #### Note:
+>
+> * Pipelines controller deployments `replicas` will not be handled by operator. User has to change the replicas as follows,
+>   ```
+>   kubectl --namespace tekton-pipelines scale deployment tekton-pipelines-controller --replicas=3
+>   ```
+>
+> * `kube-api-qps` and `kube-api-burst` will be multiplied by 2 in pipelines controller. To get the detailed information visit [Performance Configuration](https://tekton.dev/docs/pipelines/tekton-controller-performance-configuration/) guide
+> * if you modify or remove any of the performance properties, `tekton-pipelines-controller` deployment and `config-leader-election` config-map (if `buckets` changed) will be updated, and `tekton-pipelines-controller` pods will be recreated

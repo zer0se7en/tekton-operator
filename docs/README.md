@@ -47,6 +47,14 @@ Tekton Operator defines the following entities:
     <td>Configure the <a HREF="https://github.com/tektoncd/results">Tekton Result</a> component to be installed and managed.</td>
   </tr>
   <tr>
+    <td><code>TektonChain</code></td>
+    <td>Configure the <a HREF="https://github.com/tektoncd/chains">Tekton Chain</a> component to be installed and managed.</td>
+  </tr>
+  <tr>
+    <td><code>OpenShiftPipelinesAsCode</code></td>
+    <td>Configure the <a HREF="https://github.com/openshift-pipelines/pipelines-as-code">Pipelines as Code</a> component to be installed and managed.</td>
+  </tr>
+  <tr>
     <td><code>TektonAddon</code></td>
     <td>Configure addons to be installed and managed.</td>
   </tr>
@@ -72,7 +80,7 @@ After installing the Operator, to install the required Tekton Component such as 
 
 Create an instance of `TektonConfig` which will create the required components. You can find more details and the available configuration in [TektonConfig](TektonConfig.md).
 
-NOTE: `TektonResult` is an optional component added recently and is not installed through `TektonConfig` currently. You can find the installation steps in its [doc](TektonResult.md).
+NOTE: `TektonResult` and `TektonChain` are optional components and are not installed through `TektonConfig` currently. You can find the installation steps in their docs.
 
 
 ## Understanding Tekton Operator
@@ -90,7 +98,9 @@ You can find more about the Resources and its available configurations in their 
 - [TektonTrigger](./TektonTrigger.md)
 - [TektonDashboard](./TektonDashboard.md)
 - [TektonResult](./TektonResult.md)
+- [TektonChain](./TektonChain.md)
 - [TektonAddon](./TektonAddon.md)
+- [OpenShiftPipelinesAsCode](./OpenShiftPipelinesAsCode.md)
 
 To understand how Tekton Operator works, you can find the details [here](TektonOperator.md)
 

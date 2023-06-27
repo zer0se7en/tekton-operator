@@ -22,27 +22,26 @@ import (
 	"regexp"
 
 	"github.com/go-logr/zapr"
-	mf "github.com/manifestival/manifestival"
-	"go.uber.org/zap"
-
-	"knative.dev/pkg/kmeta"
-
-	"k8s.io/apimachinery/pkg/types"
-	namespaceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/namespace"
-
 	mfc "github.com/manifestival/client-go-client"
+	mf "github.com/manifestival/manifestival"
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	operatorclient "github.com/tektoncd/operator/pkg/client/injection/client"
+	tektonChaininformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektonchain"
 	tektonConfiginformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektonconfig"
+	tektonInstallerinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektoninstallerset"
 	tektonPipelineinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektonpipeline"
 	tektonTriggerinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektontrigger"
 	tektonConfigreconciler "github.com/tektoncd/operator/pkg/client/injection/reconciler/operator/v1alpha1/tektonconfig"
 	"github.com/tektoncd/operator/pkg/reconciler/common"
+	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
+	namespaceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/namespace"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/injection"
+	"knative.dev/pkg/kmeta"
 	"knative.dev/pkg/logging"
 )
 
@@ -76,9 +75,6 @@ func NewExtensibleController(generator common.ExtensionGenerator) injection.Cont
 		}
 		impl := tektonConfigreconciler.NewImpl(ctx, c)
 
-		// Add enqueue func in reconciler
-		c.enqueueAfter = impl.EnqueueAfter
-
 		logger.Info("Setting up event handlers for TektonConfig")
 
 		tektonConfiginformer.Get(ctx).Informer().AddEventHandler(controller.HandleAll(impl.Enqueue))
@@ -89,6 +85,16 @@ func NewExtensibleController(generator common.ExtensionGenerator) injection.Cont
 		})
 
 		tektonTriggerinformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: controller.FilterController(&v1alpha1.TektonConfig{}),
+			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
+		})
+
+		tektonChaininformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: controller.FilterController(&v1alpha1.TektonConfig{}),
+			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
+		})
+
+		tektonInstallerinformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 			FilterFunc: controller.FilterController(&v1alpha1.TektonConfig{}),
 			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
 		})

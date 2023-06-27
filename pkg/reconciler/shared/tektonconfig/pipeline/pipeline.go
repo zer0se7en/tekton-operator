@@ -18,85 +18,44 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
 	"reflect"
+	"strings"
 
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
+	"knative.dev/pkg/apis"
 
 	op "github.com/tektoncd/operator/pkg/client/clientset/versioned/typed/operator/v1alpha1"
-	operatorv1alpha1 "github.com/tektoncd/operator/pkg/client/clientset/versioned/typed/operator/v1alpha1"
-	"github.com/tektoncd/operator/pkg/reconciler/common"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"knative.dev/pkg/test/logging"
 )
 
-func CreatePipelineCR(ctx context.Context, instance v1alpha1.TektonComponent, client operatorv1alpha1.OperatorV1alpha1Interface) error {
-	configInstance := instance.(*v1alpha1.TektonConfig)
-	if _, err := ensureTektonPipelineExists(ctx, client.TektonPipelines(), configInstance); err != nil {
-		return errors.New(err.Error())
-	}
-	if _, err := waitForTektonPipelineState(ctx, client.TektonPipelines(), v1alpha1.PipelineResourceName,
-		isTektonPipelineReady); err != nil {
-		log.Println("TektonPipeline is not in ready state: ", err)
-		return err
-	}
-	return nil
-}
-
-func ensureTektonPipelineExists(ctx context.Context, clients op.TektonPipelineInterface, config *v1alpha1.TektonConfig) (*v1alpha1.TektonPipeline, error) {
+func EnsureTektonPipelineExists(ctx context.Context, clients op.TektonPipelineInterface, tp *v1alpha1.TektonPipeline) (*v1alpha1.TektonPipeline, error) {
 	tpCR, err := GetPipeline(ctx, clients, v1alpha1.PipelineResourceName)
-	if err == nil {
-		// if the pipeline spec is changed then update the instance
-		updated := false
 
-		if config.Spec.TargetNamespace != tpCR.Spec.TargetNamespace {
-			tpCR.Spec.TargetNamespace = config.Spec.TargetNamespace
-			updated = true
+	if err != nil {
+		if !apierrs.IsNotFound(err) {
+			return nil, err
 		}
-
-		if !reflect.DeepEqual(tpCR.Spec.Pipeline, config.Spec.Pipeline) {
-			tpCR.Spec.Pipeline = config.Spec.Pipeline
-			updated = true
+		if err := CreatePipeline(ctx, clients, tp); err != nil {
+			return nil, err
 		}
-
-		if !reflect.DeepEqual(tpCR.Spec.Config, config.Spec.Config) {
-			tpCR.Spec.Config = config.Spec.Config
-			updated = true
-		}
-
-		if tpCR.ObjectMeta.OwnerReferences == nil {
-			ownerRef := *metav1.NewControllerRef(config, config.GroupVersionKind())
-			tpCR.ObjectMeta.OwnerReferences = []metav1.OwnerReference{ownerRef}
-			updated = true
-		}
-
-		if updated {
-			return clients.Update(ctx, tpCR, metav1.UpdateOptions{})
-		}
-
-		return tpCR, err
+		return nil, v1alpha1.RECONCILE_AGAIN_ERR
 	}
 
-	if apierrs.IsNotFound(err) {
-		tpCR = &v1alpha1.TektonPipeline{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: v1alpha1.PipelineResourceName,
-			},
-			Spec: v1alpha1.TektonPipelineSpec{
-				CommonSpec: v1alpha1.CommonSpec{
-					TargetNamespace: config.Spec.TargetNamespace,
-				},
-				Pipeline: config.Spec.Pipeline,
-				Config:   config.Spec.Config,
-			},
-		}
-
-		return clients.Create(ctx, tpCR, metav1.CreateOptions{})
+	tpCR, err = UpdatePipeline(ctx, tpCR, tp, clients)
+	if err != nil {
+		return nil, err
 	}
+
+	ok, err := isTektonPipelineReady(tpCR, err)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, v1alpha1.RECONCILE_AGAIN_ERR
+	}
+
 	return tpCR, err
 }
 
@@ -104,71 +63,75 @@ func GetPipeline(ctx context.Context, clients op.TektonPipelineInterface, name s
 	return clients.Get(ctx, name, metav1.GetOptions{})
 }
 
-// WaitForTektonPipelineState polls the status of the TektonPipeline called name
-// from client every `interval` until `inState` returns `true` indicating it
-// is done, returns an error or timeout.
-func waitForTektonPipelineState(ctx context.Context, clients op.TektonPipelineInterface, name string,
-	inState func(s *v1alpha1.TektonPipeline, err error) (bool, error)) (*v1alpha1.TektonPipeline, error) {
-	span := logging.GetEmitableSpan(ctx, fmt.Sprintf("WaitForTektonPipelineState/%s/%s", name, "TektonPipelineIsReady"))
-	defer span.End()
-
-	var lastState *v1alpha1.TektonPipeline
-	waitErr := wait.PollImmediate(common.Interval, common.Timeout, func() (bool, error) {
-		lastState, err := clients.Get(ctx, name, metav1.GetOptions{})
-		return inState(lastState, err)
-	})
-
-	if waitErr != nil {
-		return lastState, fmt.Errorf("tektonpipeline %s is not in desired state, got: %+v: %w: For more info Please check TektonPipeline CR status", name, lastState, waitErr)
+func GetTektonPipelineCR(config *v1alpha1.TektonConfig) *v1alpha1.TektonPipeline {
+	ownerRef := *metav1.NewControllerRef(config, config.GroupVersionKind())
+	return &v1alpha1.TektonPipeline{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            v1alpha1.PipelineResourceName,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
+		},
+		Spec: v1alpha1.TektonPipelineSpec{
+			CommonSpec: v1alpha1.CommonSpec{
+				TargetNamespace: config.Spec.TargetNamespace,
+			},
+			Pipeline: config.Spec.Pipeline,
+			Config:   config.Spec.Config,
+		},
 	}
-	return lastState, nil
+}
+
+func CreatePipeline(ctx context.Context, clients op.TektonPipelineInterface, tp *v1alpha1.TektonPipeline) error {
+	_, err := clients.Create(ctx, tp, metav1.CreateOptions{})
+	return err
+}
+
+func UpdatePipeline(ctx context.Context, old *v1alpha1.TektonPipeline, new *v1alpha1.TektonPipeline, clients op.TektonPipelineInterface) (*v1alpha1.TektonPipeline, error) {
+	// if the pipeline spec is changed then update the instance
+	updated := false
+
+	if new.Spec.TargetNamespace != old.Spec.TargetNamespace {
+		old.Spec.TargetNamespace = new.Spec.TargetNamespace
+		updated = true
+	}
+
+	if !reflect.DeepEqual(old.Spec.Pipeline, new.Spec.Pipeline) {
+		old.Spec.Pipeline = new.Spec.Pipeline
+		updated = true
+	}
+
+	if !reflect.DeepEqual(old.Spec.Config, new.Spec.Config) {
+		old.Spec.Config = new.Spec.Config
+		updated = true
+	}
+
+	if !reflect.DeepEqual(old.Spec.Performance, new.Spec.Performance) {
+		old.Spec.Performance = new.Spec.Performance
+		updated = true
+	}
+
+	if old.ObjectMeta.OwnerReferences == nil {
+		old.ObjectMeta.OwnerReferences = new.ObjectMeta.OwnerReferences
+		updated = true
+	}
+
+	if updated {
+		_, err := clients.Update(ctx, old, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return nil, v1alpha1.RECONCILE_AGAIN_ERR
+	}
+	return old, nil
 }
 
 // IsTektonPipelineReady will check the status conditions of the TektonPipeline and return true if the TektonPipeline is ready.
 func isTektonPipelineReady(s *v1alpha1.TektonPipeline, err error) (bool, error) {
-	upgradePending, errInternal := common.CheckUpgradePending(s)
-	if err != nil {
-		return false, errInternal
-	}
-	if upgradePending {
-		return false, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
+	if s.GetStatus() != nil && s.GetStatus().GetCondition(apis.ConditionReady) != nil {
+		if strings.Contains(s.GetStatus().GetCondition(apis.ConditionReady).Message, v1alpha1.UpgradePending) {
+			return false, v1alpha1.DEPENDENCY_UPGRADE_PENDING_ERR
+		}
 	}
 	return s.Status.IsReady(), err
-}
-
-// TektonPipelineCRDelete deletes tha TektonPipeline to see if all resources will be deleted
-func TektonPipelineCRDelete(ctx context.Context, clients op.TektonPipelineInterface, name string) error {
-	if _, err := GetPipeline(ctx, clients, v1alpha1.PipelineResourceName); err != nil {
-		if apierrs.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-	if err := clients.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-		return fmt.Errorf("TektonPipeline %q failed to delete: %v", name, err)
-	}
-	err := wait.PollImmediate(common.Interval, common.Timeout, func() (bool, error) {
-		_, err := clients.Get(ctx, name, metav1.GetOptions{})
-		if apierrs.IsNotFound(err) {
-			return true, nil
-		}
-		return false, err
-	})
-	if err != nil {
-		return fmt.Errorf("Timed out waiting on TektonPipeline to delete %v", err)
-	}
-	return verifyNoTektonPipelineCR(ctx, clients)
-}
-
-func verifyNoTektonPipelineCR(ctx context.Context, clients op.TektonPipelineInterface) error {
-	pipelines, err := clients.List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	if len(pipelines.Items) > 0 {
-		return errors.New("TektonPipeline still exists")
-	}
-	return nil
 }
 
 func GetTektonConfig() *v1alpha1.TektonConfig {
@@ -183,4 +146,26 @@ func GetTektonConfig() *v1alpha1.TektonConfig {
 			},
 		},
 	}
+}
+
+func EnsureTektonPipelineCRNotExists(ctx context.Context, clients op.TektonPipelineInterface) error {
+	if _, err := GetPipeline(ctx, clients, v1alpha1.PipelineResourceName); err != nil {
+		if apierrs.IsNotFound(err) {
+			// TektonPipeline CR is gone, hence return nil
+			return nil
+		}
+		return err
+	}
+	// if the Get was successful, try deleting the CR
+	if err := clients.Delete(ctx, v1alpha1.PipelineResourceName, metav1.DeleteOptions{}); err != nil {
+		if apierrs.IsNotFound(err) {
+			// TektonPipeline CR is gone, hence return nil
+			return nil
+		}
+		return fmt.Errorf("TektonPipeline %q failed to delete: %v", v1alpha1.PipelineResourceName, err)
+	}
+	// if the Delete API call was success,
+	// then return requeue_event
+	// so that in a subsequent reconcile call the absence of the CR is verified by one of the 2 checks above
+	return v1alpha1.RECONCILE_AGAIN_ERR
 }

@@ -11,21 +11,25 @@ package envy makes working with ENV variables in Go trivial.
 package envy
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/joho/godotenv"
+	"github.com/rogpeppe/go-internal/modfile"
 )
 
 var gil = &sync.RWMutex{}
 var env = map[string]string{}
+
+// GO111MODULE is ENV for turning mods on/off
+const GO111MODULE = "GO111MODULE"
 
 func init() {
 	Load()
@@ -36,22 +40,6 @@ func init() {
 func loadEnv() {
 	gil.Lock()
 	defer gil.Unlock()
-	// Detect the Go version on the user system, not the one that was used to compile the binary
-	v := ""
-	out, err := exec.Command("go", "version").Output()
-	if err == nil {
-		// This will break when Go 2 lands
-		v = strings.Split(string(out), " ")[2][4:]
-	} else {
-		v = runtime.Version()[4:]
-	}
-
-	goRuntimeVersion, _ := strconv.ParseFloat(runtime.Version()[4:], 64)
-
-	goVersion, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		goVersion = goRuntimeVersion
-	}
 
 	if os.Getenv("GO_ENV") == "" {
 		// if the flag "test.v" is *defined*, we're running as a unit test. Note that we don't care
@@ -65,7 +53,7 @@ func loadEnv() {
 	}
 
 	// set the GOPATH if using >= 1.8 and the GOPATH isn't set
-	if goVersion >= 8 && os.Getenv("GOPATH") == "" {
+	if os.Getenv("GOPATH") == "" {
 		out, err := exec.Command("go", "env", "GOPATH").Output()
 		if err == nil {
 			gp := strings.TrimSpace(string(out))
@@ -175,7 +163,7 @@ func Map() map[string]string {
 	for k, v := range env {
 		cp[k] = v
 	}
-	return env
+	return cp
 }
 
 // Temp makes a copy of the values and allows operation on
@@ -198,6 +186,20 @@ func GoPath() string {
 	return Get("GOPATH", "")
 }
 
+func GoBin() string {
+	return Get("GO_BIN", "go")
+}
+
+func InGoPath() bool {
+	pwd, _ := os.Getwd()
+	for _, p := range GoPaths() {
+		if strings.HasPrefix(pwd, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // GoPaths returns all possible GOPATHS that are set.
 func GoPaths() []string {
 	gp := Get("GOPATH", "")
@@ -207,24 +209,18 @@ func GoPaths() []string {
 	return strings.Split(gp, ":")
 }
 
-func importPath(path string) string {
-	for _, gopath := range GoPaths() {
-		srcpath := filepath.Join(gopath, "src")
-		rel, err := filepath.Rel(srcpath, path)
-		if err == nil {
-			return filepath.ToSlash(rel)
-		}
+// CurrentModule will attempt to return the module name from `go.mod`.
+// GOPATH isn't supported, no fallback to `CurrentPackage()` anymore.
+func CurrentModule() (string, error) {
+	moddata, err := ioutil.ReadFile("go.mod")
+	if err != nil {
+		return "", errors.New("go.mod cannot be read or does not exist")
 	}
-
-	// fallback to trim
-	rel := strings.TrimPrefix(path, filepath.Join(GoPath(), "src"))
-	rel = strings.TrimPrefix(rel, string(filepath.Separator))
-	return filepath.ToSlash(rel)
-}
-
-func CurrentPackage() string {
-	pwd, _ := os.Getwd()
-	return importPath(pwd)
+	packagePath := modfile.ModulePath(moddata)
+	if packagePath == "" {
+		return "", errors.New("go.mod is malformed")
+	}
+	return packagePath, nil
 }
 
 func Environ() []string {

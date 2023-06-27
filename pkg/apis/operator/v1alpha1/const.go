@@ -16,7 +16,12 @@ limitations under the License.
 
 package v1alpha1
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+
+	"knative.dev/pkg/controller"
+)
 
 const (
 	// operatorVersion
@@ -30,21 +35,35 @@ const (
 	// Addon Params
 	ClusterTasksParam      = "clusterTasks"
 	PipelineTemplatesParam = "pipelineTemplates"
+	CommunityClusterTasks  = "communityClusterTasks"
 
 	// Hub Params
 	EnableDevconsoleIntegrationParam = "enable-devconsole-integration"
 
-	ApiFieldAlpha  = "alpha"
-	ApiFieldStable = "stable"
-
 	LastAppliedHashKey     = "operator.tekton.dev/last-applied-hash"
 	CreatedByKey           = "operator.tekton.dev/created-by"
 	ReleaseVersionKey      = "operator.tekton.dev/release-version"
+	Component              = "operator.tekton.dev/component" // Used in case a component has sub-components eg TektonHub
 	ReleaseMinorVersionKey = "operator.tekton.dev/release-minor-version"
 	TargetNamespaceKey     = "operator.tekton.dev/target-namespace"
 	InstallerSetType       = "operator.tekton.dev/type"
+	LabelOperandName       = "operator.tekton.dev/operand-name"
+	DbSecretHash           = "operator.tekton.dev/db-secret-hash"
 
 	UpgradePending = "upgrade pending"
+	Reinstalling   = "reinstalling"
+
+	RequeueDelay = 10 * time.Second
+
+	// pruner default schedule, used in auto generate tektonConfig
+	PrunerDefaultSchedule = "0 8 * * *"
+	PrunerDefaultKeep     = uint(100)
+
+	// SCC params, OpenShift specific
+
+	// PipelinesSCC will be changed to `restricted` or `restricted-v2` once
+	// `pipelines-scc` is deprecated
+	PipelinesSCC = "pipelines-scc"
 )
 
 var (
@@ -52,6 +71,8 @@ var (
 	// When we updates spec or status we reconcile again and then proceed so
 	// that we proceed ahead with updated object
 	RECONCILE_AGAIN_ERR = fmt.Errorf("reconcile again and proceed")
+
+	REQUEUE_EVENT_AFTER = controller.NewRequeueAfter(RequeueDelay)
 
 	// DEPENDENCY_UPGRADE_PENDING_ERR
 	// When a reconciler cannot proceed due to an upgrade in progress of a dependency
@@ -79,9 +100,15 @@ var (
 		"pipelinerun",
 	}
 
+	// pruner default resource, used in auto generate tektonConfig
+	PruningDefaultResources = []string{
+		"pipelinerun",
+	}
+
 	AddonParams = map[string]ParamValue{
 		ClusterTasksParam:      defaultParamValue,
 		PipelineTemplatesParam: defaultParamValue,
+		CommunityClusterTasks:  defaultParamValue,
 	}
 
 	HubParams = map[string]ParamValue{
@@ -90,10 +117,20 @@ var (
 )
 
 var (
-	PipelineResourceName  = "pipeline"
-	TriggerResourceName   = "trigger"
-	DashboardResourceName = "dashboard"
-	AddonResourceName     = "addon"
-	ConfigResourceName    = "config"
-	ResultResourceName    = "result"
+	ConfigResourceName           = "config"
+	PipelineResourceName         = "pipeline"
+	OperandTektoncdPipeline      = "tektoncd-pipelines"
+	TriggerResourceName          = "trigger"
+	OperandTektoncdTriggers      = "tektoncd-triggers"
+	DashboardResourceName        = "dashboard"
+	OperandTektoncdDashboard     = "tektoncd-dashboard"
+	AddonResourceName            = "addon"
+	ResultResourceName           = "result"
+	OperandTektoncdResults       = "tektoncd-results"
+	HubResourceName              = "hub"
+	OperandTektoncdHub           = "tektoncd-hub"
+	ChainResourceName            = "chain"
+	OperandTektoncdChains        = "tektoncd-chains"
+	OpenShiftPipelinesAsCodeName = "pipelines-as-code"
+	PrunerResourceName           = "tektoncd-pruner"
 )

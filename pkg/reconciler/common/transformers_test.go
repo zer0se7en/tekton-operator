@@ -18,7 +18,7 @@ package common
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"path"
 	"testing"
 
@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/api/apps/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -97,7 +98,7 @@ func TestCommonTransformers(t *testing.T) {
 }
 
 func TestImagesFromEnv(t *testing.T) {
-	os.Setenv("IMAGE_PIPELINES_CONTROLLER", "docker.io/pipeline")
+	t.Setenv("IMAGE_PIPELINES_CONTROLLER", "docker.io/pipeline")
 	data := ImagesFromEnv(PipelinesImagePrefix)
 	if !cmp.Equal(data, map[string]string{"CONTROLLER": "docker.io/pipeline"}) {
 		t.Fatalf("Unexpected ImageFromEnv: %s", cmp.Diff(data, map[string]string{"CONTROLLER": "docker.io/pipeline"}))
@@ -186,6 +187,21 @@ func TestReplaceImages(t *testing.T) {
 		assertTaskImage(t, newManifest.Resources(), "build", "$(inputs.params.BUILDER_IMAGE)")
 	})
 
+	t.Run("replace containers by name", func(t *testing.T) {
+		image := "foo.bar/image/controller"
+		images := map[string]string{
+			"controller_deployment": image,
+		}
+		testData := path.Join("testdata", "test-replace-statefulset-image.yaml")
+
+		manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+		assertNoEror(t, err)
+		newManifest, err := manifest.Transform(StatefulSetImages(images))
+		assertNoEror(t, err)
+		assertStatefulSetContainersHasImage(t, newManifest.Resources(), "controller-deployment", image)
+		assertStatefulSetContainersHasImage(t, newManifest.Resources(), "sidecar", "busybox")
+	})
+
 	t.Run("replace task addons param image", func(t *testing.T) {
 		paramName := ParamPrefix + "builder_image"
 		image := "foo.bar/image/buildah"
@@ -217,6 +233,25 @@ func assertDeployContainersHasImage(t *testing.T, resources []unstructured.Unstr
 	for _, resource := range resources {
 		deployment := deploymentFor(t, resource)
 		containers := deployment.Spec.Template.Spec.Containers
+
+		for _, container := range containers {
+			if container.Name != name {
+				continue
+			}
+
+			if container.Image != image {
+				t.Errorf("assertion failed; unexpected image: expected %s and got %s", image, container.Image)
+			}
+		}
+	}
+}
+
+func assertStatefulSetContainersHasImage(t *testing.T, resources []unstructured.Unstructured, name string, image string) {
+	t.Helper()
+
+	for _, resource := range resources {
+		set := statefulSetFor(t, resource)
+		containers := set.Spec.Template.Spec.Containers
 
 		for _, container := range containers {
 			if container.Name != name {
@@ -330,6 +365,15 @@ func deploymentFor(t *testing.T, unstr unstructured.Unstructured) *appsv1.Deploy
 	return deployment
 }
 
+func statefulSetFor(t *testing.T, unstr unstructured.Unstructured) *appsv1.StatefulSet {
+	set := &appsv1.StatefulSet{}
+	err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstr.Object, set)
+	if err != nil {
+		t.Errorf("failed to load deployment yaml")
+	}
+	return set
+}
+
 func TestReplaceNamespaceInDeploymentEnv(t *testing.T) {
 	testData := path.Join("testdata", "test-replace-env-in-result-deployment.yaml")
 	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
@@ -390,20 +434,13 @@ func TestReplaceNamespaceInClusterRole(t *testing.T) {
 	clusterRole := manifest.Resources()[0].Object
 	rules, _, err := unstructured.NestedSlice(clusterRole, "rules")
 	assertNoEror(t, err)
-	//  The file has 3 rules — hard-coding this a bit
-	podsecuritypolicyRule := rules[0].(map[string]interface{})
-	for _, name := range podsecuritypolicyRule["resourceNames"].([]interface{}) {
-		if name.(string) != "tekton-pipelines" {
-			t.Errorf("Replace 'tekton-pipelines' in the wrong rule (podsecuritypolicies)")
-		}
-	}
-	namespaceRule := rules[1].(map[string]interface{})
+	namespaceRule := rules[0].(map[string]interface{})
 	for _, name := range namespaceRule["resourceNames"].([]interface{}) {
 		if name.(string) != "foobar" {
 			t.Errorf("Didn't replace 'tekton-pipelines' in the namespace rule")
 		}
 	}
-	namespaceFinalizerRule := rules[2].(map[string]interface{})
+	namespaceFinalizerRule := rules[1].(map[string]interface{})
 	for _, name := range namespaceFinalizerRule["resourceNames"].([]interface{}) {
 		if name.(string) != "foobar" {
 			t.Errorf("Didn't replace 'tekton-pipelines' in the namespace rule")
@@ -501,6 +538,7 @@ func TestAddConfiguration(t *testing.T) {
 				Effect:   "noSchedule",
 			},
 		},
+		PriorityClassName: string("system-cluster-critical"),
 	}
 
 	manifest, err = manifest.Transform(AddConfiguration(config))
@@ -509,7 +547,217 @@ func TestAddConfiguration(t *testing.T) {
 	d := &v1beta1.Deployment{}
 	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, d)
 	assertNoEror(t, err)
-
 	assert.Equal(t, d.Spec.Template.Spec.NodeSelector["foo"], config.NodeSelector["foo"])
 	assert.Equal(t, d.Spec.Template.Spec.Tolerations[0].Key, config.Tolerations[0].Key)
+	assert.Equal(t, d.Spec.Template.Spec.PriorityClassName, config.PriorityClassName)
+}
+
+func TestAddPSA(t *testing.T) {
+	testData := path.Join("testdata", "test-add-psa.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	newManifest, err := manifest.Transform(AddDeploymentRestrictedPSA())
+	assert.NilError(t, err)
+
+	got := &appsv1.Deployment{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(newManifest.Resources()[0].Object, got)
+	if err != nil {
+		t.Errorf("failed to load deployment yaml")
+	}
+
+	testData = path.Join("testdata", "test-add-psa-expected.yaml")
+	expectedManifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	expected := &appsv1.Deployment{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(expectedManifest.Resources()[0].Object, expected)
+	if err != nil {
+		t.Errorf("failed to load deployment yaml")
+	}
+
+	if d := cmp.Diff(expected, got); d != "" {
+		t.Errorf("failed to update deployment %s", diff.PrintWantGot(d))
+	}
+}
+
+func TestAddStatefulSetPSA(t *testing.T) {
+	testData := path.Join("testdata", "test-add-psa-statefulset.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	newManifest, err := manifest.Transform(AddStatefulSetRestrictedPSA())
+	assert.NilError(t, err)
+
+	got := &appsv1.StatefulSet{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(newManifest.Resources()[0].Object, got)
+	if err != nil {
+		t.Errorf("failed to load deployment yaml")
+	}
+
+	testData = path.Join("testdata", "test-add-psa-expected-statefulset.yaml")
+	expectedManifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	expected := &appsv1.StatefulSet{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(expectedManifest.Resources()[0].Object, expected)
+	if err != nil {
+		t.Errorf("failed to load deployment yaml")
+	}
+
+	if d := cmp.Diff(expected, got); d != "" {
+		t.Errorf("failed to update deployment %s", diff.PrintWantGot(d))
+	}
+}
+
+func TestCopyConfigMapValues(t *testing.T) {
+	testData := path.Join("testdata", "test-resolver-config.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assertNoEror(t, err)
+
+	expectedValues := map[string]string{
+		"default-tekton-hub-catalog":        "abc-catalog",
+		"default-artifact-hub-task-catalog": "some-random-catalog",
+		"ignore-me-field":                   "ignore-me",
+	}
+
+	manifest, err = manifest.Transform(CopyConfigMap("hubresolver-config", expectedValues))
+	assertNoEror(t, err)
+
+	cm := &corev1.ConfigMap{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
+	assertNoEror(t, err)
+	// ConfigMap will have values changed only for field which are defined
+	assert.Equal(t, cm.Data["default-tekton-hub-catalog"], "abc-catalog")
+	assert.Equal(t, cm.Data["default-artifact-hub-task-catalog"], "some-random-catalog")
+
+	// fields which are not defined in expected configmap will be same as before
+	assert.Equal(t, cm.Data["default-kind"], "task")
+	assert.Equal(t, cm.Data["default-type"], "artifact")
+
+	// extra fields in expected configmap will be ignore and will not be added
+	assert.Equal(t, cm.Data["ignore-me-field"], "")
+
+}
+
+func TestReplaceDeploymentArg(t *testing.T) {
+	testData := path.Join("testdata", "test-dashboard-deployment.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assert.NilError(t, err)
+
+	existingArg := "--external-logs="
+	newArg := "--external-logs=abc"
+
+	newManifest, err := manifest.Transform(ReplaceDeploymentArg("tekton-dashboard", existingArg, newArg))
+	assert.NilError(t, err)
+
+	got := &appsv1.Deployment{}
+	err = runtime.DefaultUnstructuredConverter.FromUnstructured(newManifest.Resources()[0].Object, got)
+	if err != nil {
+		t.Errorf("failed to load deployment yaml")
+	}
+
+	found := false
+	for _, a := range got.Spec.Template.Spec.Containers[0].Args {
+		if a == newArg {
+			found = true
+		}
+	}
+
+	if !found {
+		t.Fatalf("failed to find new arg in deployment")
+	}
+}
+
+func TestReplaceNamespaceInServiceAccount(t *testing.T) {
+	testData := path.Join("testdata", "test-replace-namespace-in-service-account.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assertNoEror(t, err)
+
+	targetNamespace := "foobar"
+	manifest, err = manifest.Transform(ReplaceNamespaceInServiceAccount(targetNamespace))
+	assertNoEror(t, err)
+
+	for _, resource := range manifest.Resources() {
+		if resource.GetNamespace() != targetNamespace {
+			t.Errorf("namespace not updated")
+		}
+	}
+}
+
+func TestReplaceNamespaceInClusterRoleBinding(t *testing.T) {
+	testData := path.Join("testdata", "test-replace-namespace-in-cluster-role-binding.yaml")
+	manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+	assertNoEror(t, err)
+
+	targetNamespace := "foobar"
+	manifest, err = manifest.Transform(ReplaceNamespaceInClusterRoleBinding(targetNamespace))
+	assertNoEror(t, err)
+
+	for _, resource := range manifest.Resources() {
+		crb := &rbacv1.ClusterRoleBinding{}
+		err = runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, crb)
+		assertNoEror(t, err)
+
+		for _, subject := range crb.Subjects {
+			if subject.Namespace != targetNamespace {
+				t.Errorf("namespace not updated")
+			}
+		}
+	}
+}
+
+func TestCopyConfigMapWithForceUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		forceUpdate bool
+		data        map[string]string
+	}{
+		{
+			name:        "force-update-disabled",
+			forceUpdate: false,
+			data: map[string]string{
+				"default-tekton-hub-catalog": "foo",
+				"default-kind":               "pipeline",
+			},
+		},
+		{
+			name:        "force-update-enabled",
+			forceUpdate: true,
+			data: map[string]string{
+				"default-tekton-hub-catalog": "foo",
+				"default-kind":               "pipeline",
+				"my_custom_field":            "secret_data",
+			},
+		},
+	}
+
+	configMapName := "hubresolver-config"
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// get a manifest
+			testData := path.Join("testdata", "test-resolver-config.yaml")
+			manifest, err := mf.ManifestFrom(mf.Recursive(testData))
+			assert.NilError(t, err)
+
+			manifest, err = manifest.Transform(CopyConfigMapWithForceUpdate(configMapName, test.data, test.forceUpdate))
+			assert.NilError(t, err)
+
+			cm := &corev1.ConfigMap{}
+			err = runtime.DefaultUnstructuredConverter.FromUnstructured(manifest.Resources()[0].Object, cm)
+			assert.NilError(t, err)
+
+			for key, value := range test.data {
+				keyFound := false
+				for mapKey, mapValue := range cm.Data {
+					if mapKey == key {
+						assert.Equal(t, value, mapValue)
+						keyFound = true
+					}
+				}
+				assert.Equal(t, true, keyFound, fmt.Sprintf("key[%s] not found in config map", key))
+			}
+		})
+	}
 }

@@ -19,9 +19,7 @@ package tektoninstallerset
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/go-logr/logr"
 	mf "github.com/manifestival/manifestival"
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	clientset "github.com/tektoncd/operator/pkg/client/clientset/versioned"
@@ -35,8 +33,6 @@ import (
 type Reconciler struct {
 	operatorClientSet clientset.Interface
 	mfClient          mf.Client
-	mfLogger          logr.Logger
-	enqueueAfter      func(obj interface{}, after time.Duration)
 }
 
 // Reconciler implements controller.Reconciler
@@ -47,23 +43,19 @@ var _ tektonInstallerreconciler.Finalizer = (*Reconciler)(nil)
 func (r *Reconciler) FinalizeKind(ctx context.Context, installerSet *v1alpha1.TektonInstallerSet) pkgreconciler.Event {
 	logger := logging.FromContext(ctx)
 
-	deleteManifests, err := mf.ManifestFrom(installerSet.Spec.Manifests, mf.UseClient(r.mfClient), mf.UseLogger(r.mfLogger))
+	deleteManifests, err := mf.ManifestFrom(installerSet.Spec.Manifests, mf.UseClient(r.mfClient))
 	if err != nil {
 		logger.Error("Error creating initial manifest: ", err)
 		installerSet.Status.MarkNotReady(fmt.Sprintf("Internal Error: failed to create manifest: %s", err.Error()))
 		return err
 	}
 
-	// Delete all resources except CRDs and Namespace as they are own by owner of
-	// TektonInstallerSet
-	// They will be deleted when the component CR is deleted
-	deleteManifests = deleteManifests.Filter(mf.Not(mf.Any(namespacePred, mf.CRDs)))
-	err = deleteManifests.Delete(mf.PropagationPolicy(v1.DeletePropagationForeground))
+	installer := NewInstaller(&deleteManifests, r.mfClient, logger)
+	err = installer.DeleteResources()
 	if err != nil {
-		logger.Error("failed to delete resources")
+		logger.Error("failed to delete resources: ", err)
 		return err
 	}
-
 	return nil
 }
 
@@ -76,9 +68,9 @@ func getReference(tis *v1alpha1.TektonInstallerSet) []v1.OwnerReference {
 // converge the two.
 func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.TektonInstallerSet) pkgreconciler.Event {
 	installerSet.Status.InitializeConditions()
-	logger := logging.FromContext(ctx)
+	logger := logging.FromContext(ctx).With("installerSet", fmt.Sprintf("%s/%s", installerSet.Namespace, installerSet.Name))
 
-	installManifests, err := mf.ManifestFrom(installerSet.Spec.Manifests, mf.UseClient(r.mfClient), mf.UseLogger(r.mfLogger))
+	installManifests, err := mf.ManifestFrom(installerSet.Spec.Manifests, mf.UseClient(r.mfClient))
 	if err != nil {
 		logger.Error("Error creating initial manifest: ", err)
 		installerSet.Status.MarkNotReady(fmt.Sprintf("Internal Error: failed to create manifest: %s", err.Error()))
@@ -100,9 +92,7 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 		return err
 	}
 
-	installer := installer{
-		Manifest: installManifests,
-	}
+	installer := NewInstaller(&installManifests, r.mfClient, logger)
 
 	// Install CRDs
 	err = installer.EnsureCRDs()
@@ -148,7 +138,6 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	err = installer.IsWebhookReady()
 	if err != nil {
 		installerSet.Status.MarkWebhookNotReady(err.Error())
-		r.enqueueAfter(installerSet, time.Second*10)
 		return nil
 	}
 
@@ -159,19 +148,25 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 	err = installer.IsControllerReady()
 	if err != nil {
 		installerSet.Status.MarkControllerNotReady(err.Error())
-		r.enqueueAfter(installerSet, time.Second*10)
 		return nil
 	}
 
 	// Update Ready status of Controller
 	installerSet.Status.MarkControllerReady()
 
+	// job
+	labels := installerSet.GetLabels()
+	installSetname := installerSet.GetName()
+	err = installer.IsJobCompleted(ctx, labels, installSetname)
+	if err != nil {
+		return err
+	}
+
 	// Check if any other deployment exists other than controller
 	// and webhook and is ready
 	err = installer.AllDeploymentsReady()
 	if err != nil {
 		installerSet.Status.MarkAllDeploymentsNotReady(err.Error())
-		r.enqueueAfter(installerSet, time.Second*10)
 		return nil
 	}
 
@@ -183,8 +178,7 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, installerSet *v1alpha1.T
 
 func (r *Reconciler) handleError(err error, installerSet *v1alpha1.TektonInstallerSet) error {
 	if err == v1alpha1.RECONCILE_AGAIN_ERR {
-		r.enqueueAfter(installerSet, 10*time.Second)
-		return nil
+		return v1alpha1.REQUEUE_EVENT_AFTER
 	}
 	return err
 }

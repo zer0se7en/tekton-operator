@@ -29,9 +29,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"knative.dev/pkg/logging"
+	"knative.dev/pkg/ptr"
 )
 
 const (
@@ -40,12 +42,19 @@ const (
 	PipelinesImagePrefix          = "IMAGE_PIPELINES_"
 	TriggersImagePrefix           = "IMAGE_TRIGGERS_"
 	AddonsImagePrefix             = "IMAGE_ADDONS_"
+	PacImagePrefix                = "IMAGE_PAC_"
+	ChainsImagePrefix             = "IMAGE_CHAINS_"
+	ResultsImagePrefix            = "IMAGE_RESULTS_"
+	HubImagePrefix                = "IMAGE_HUB_"
 
 	ArgPrefix   = "arg_"
 	ParamPrefix = "param_"
 
 	resultAPIDeployment     = "tekton-results-api"
 	resultWatcherDeployment = "tekton-results-watcher"
+
+	runAsNonRootValue              = true
+	allowPrivilegedEscalationValue = false
 )
 
 // transformers that are common to all components.
@@ -56,6 +65,7 @@ func transformers(ctx context.Context, obj v1alpha1.TektonComponent) []mf.Transf
 		injectNamespaceCRDWebhookClientConfig(obj.GetSpec().GetTargetNamespace()),
 		injectNamespaceCRClusterInterceptorClientConfig(obj.GetSpec().GetTargetNamespace()),
 		injectNamespaceClusterRole(obj.GetSpec().GetTargetNamespace()),
+		AddDeploymentRestrictedPSA(),
 	}
 }
 
@@ -84,12 +94,10 @@ func Transform(ctx context.Context, manifest *mf.Manifest, instance v1alpha1.Tek
 
 	remainingManifest, err := remainingManifest.Transform(transformers...)
 	if err != nil {
-		instance.GetStatus().MarkInstallFailed(err.Error())
 		return err
 	}
 	roleBindingManifest, err = roleBindingManifest.Transform(t1...)
 	if err != nil {
-		instance.GetStatus().MarkInstallFailed(err.Error())
 		return err
 	}
 	*manifest = remainingManifest.Append(roleBindingManifest)
@@ -199,6 +207,32 @@ func DeploymentImages(images map[string]string) mf.Transformer {
 	}
 }
 
+// StatefulSetImages replaces container and args images.
+func StatefulSetImages(images map[string]string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "StatefulSet" {
+			return nil
+		}
+
+		s := &appsv1.StatefulSet{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, s)
+		if err != nil {
+			return err
+		}
+
+		containers := s.Spec.Template.Spec.Containers
+		replaceContainerImages(containers, images)
+
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(s)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(unstrObj)
+
+		return nil
+	}
+}
+
 // JobImages replaces container and args images.
 func JobImages(images map[string]string) mf.Transformer {
 	return func(u *unstructured.Unstructured) error {
@@ -238,7 +272,7 @@ func replaceContainerImages(containers []corev1.Container, images map[string]str
 
 func replaceContainersArgsImage(container *corev1.Container, images map[string]string) {
 	for a, arg := range container.Args {
-		if argVal, hasArg := splitsByEqual(arg); hasArg {
+		if argVal, hasArg := SplitsByEqual(arg); hasArg {
 			argument := formKey(ArgPrefix, argVal[0])
 			if url, exist := images[argument]; exist {
 				container.Args[a] = argVal[0] + "=" + url
@@ -262,7 +296,7 @@ func formKey(prefix, arg string) string {
 	return strings.ReplaceAll(argument, "-", "_")
 }
 
-func splitsByEqual(arg string) ([]string, bool) {
+func SplitsByEqual(arg string) ([]string, bool) {
 	values := strings.Split(arg, "=")
 	if len(values) == 2 {
 		return values, true
@@ -506,6 +540,9 @@ func AddConfigMapValues(configMapName string, prop interface{}) mf.Transformer {
 		if err != nil {
 			return err
 		}
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
 
 		values := reflect.ValueOf(prop)
 		types := values.Type()
@@ -521,10 +558,13 @@ func AddConfigMapValues(configMapName string, prop interface{}) mf.Transformer {
 				if !innerElem.IsValid() {
 					continue
 				}
+
 				if innerElem.Kind() == reflect.Bool {
 					cm.Data[key] = strconv.FormatBool(innerElem.Bool())
 				} else if innerElem.Kind() == reflect.Uint {
 					cm.Data[key] = strconv.FormatUint(innerElem.Uint(), 10)
+				} else if innerElem.Kind() == reflect.String {
+					cm.Data[key] = innerElem.String()
 				}
 				continue
 			}
@@ -577,6 +617,7 @@ func AddConfiguration(config v1alpha1.Config) mf.Transformer {
 
 		d.Spec.Template.Spec.NodeSelector = config.NodeSelector
 		d.Spec.Template.Spec.Tolerations = config.Tolerations
+		d.Spec.Template.Spec.PriorityClassName = config.PriorityClassName
 
 		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(d)
 		if err != nil {
@@ -584,6 +625,264 @@ func AddConfiguration(config v1alpha1.Config) mf.Transformer {
 		}
 		u.SetUnstructuredContent(unstrObj)
 
+		return nil
+	}
+}
+
+// AddDeploymentRestrictedPSA will add the default restricted spec on Deployment to remove errors/warning
+func AddDeploymentRestrictedPSA() mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "Deployment" {
+			return nil
+		}
+
+		d := &appsv1.Deployment{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, d)
+		if err != nil {
+			return err
+		}
+
+		if d.Spec.Template.Spec.SecurityContext == nil {
+			d.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+		}
+
+		if d.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil {
+			d.Spec.Template.Spec.SecurityContext.RunAsNonRoot = ptr.Bool(runAsNonRootValue)
+		}
+
+		if d.Spec.Template.Spec.SecurityContext.SeccompProfile == nil {
+			d.Spec.Template.Spec.SecurityContext.SeccompProfile = &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			}
+		}
+
+		for i := range d.Spec.Template.Spec.Containers {
+			c := &d.Spec.Template.Spec.Containers[i]
+			if c.SecurityContext == nil {
+				c.SecurityContext = &corev1.SecurityContext{}
+			}
+			c.SecurityContext.AllowPrivilegeEscalation = ptr.Bool(allowPrivilegedEscalationValue)
+			c.SecurityContext.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
+		}
+
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(d)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(unstrObj)
+		return nil
+	}
+}
+
+// AddStatefulSetRestrictedPSA will add the default restricted spec on StatefulSet to remove errors/warning
+func AddStatefulSetRestrictedPSA() mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if strings.ToLower(u.GetKind()) != "statefulset" {
+			return nil
+		}
+
+		s := &appsv1.StatefulSet{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, s)
+		if err != nil {
+			return err
+		}
+
+		if s.Spec.Template.Spec.SecurityContext == nil {
+			s.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+		}
+
+		if s.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil {
+			s.Spec.Template.Spec.SecurityContext.RunAsNonRoot = ptr.Bool(runAsNonRootValue)
+		}
+
+		if s.Spec.Template.Spec.SecurityContext.SeccompProfile == nil {
+			s.Spec.Template.Spec.SecurityContext.SeccompProfile = &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			}
+		}
+
+		for i := range s.Spec.Template.Spec.Containers {
+			c := &s.Spec.Template.Spec.Containers[i]
+			if c.SecurityContext == nil {
+				c.SecurityContext = &corev1.SecurityContext{}
+			}
+			c.SecurityContext.AllowPrivilegeEscalation = ptr.Bool(allowPrivilegedEscalationValue)
+			c.SecurityContext.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
+		}
+
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(s)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(unstrObj)
+		return nil
+	}
+}
+
+// AddJobRestrictedPSA will add the default restricted spec on Job to remove errors/warning
+func AddJobRestrictedPSA() mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "Job" {
+			return nil
+		}
+
+		jb := &batchv1.Job{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, jb)
+		if err != nil {
+			return err
+		}
+
+		if jb.Spec.Template.Spec.SecurityContext == nil {
+			jb.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+		}
+
+		if jb.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil {
+			jb.Spec.Template.Spec.SecurityContext.RunAsNonRoot = ptr.Bool(runAsNonRootValue)
+		}
+
+		if jb.Spec.Template.Spec.SecurityContext.SeccompProfile == nil {
+			jb.Spec.Template.Spec.SecurityContext.SeccompProfile = &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			}
+		}
+
+		for i := range jb.Spec.Template.Spec.Containers {
+			c := &jb.Spec.Template.Spec.Containers[i]
+			if c.SecurityContext == nil {
+				c.SecurityContext = &corev1.SecurityContext{}
+			}
+			if c.SecurityContext.AllowPrivilegeEscalation == nil {
+				c.SecurityContext.AllowPrivilegeEscalation = ptr.Bool(allowPrivilegedEscalationValue)
+			}
+			if c.SecurityContext.Capabilities == nil {
+				c.SecurityContext.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
+			}
+		}
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(jb)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(unstrObj)
+		return nil
+	}
+}
+
+// CopyConfigMapWithForceUpdate will copy all the values from the passed configmap to the configmap
+// in the manifest, the fields which are in manifest configmap will only be copied
+// any extra fields will be copied only if the "forceUpdate" is true
+func CopyConfigMapWithForceUpdate(configMapName string, expectedValues map[string]string, forceUpdate bool) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		kind := strings.ToLower(u.GetKind())
+		if kind != "configmap" {
+			return nil
+		}
+		if u.GetName() != configMapName {
+			return nil
+		}
+
+		cm := &corev1.ConfigMap{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, cm)
+		if err != nil {
+			return err
+		}
+		if cm.Data == nil && !forceUpdate {
+			// we don't add any field in the manifest configmap, if force update is disabled
+			// we will copy any value if defined by user
+			return nil
+		}
+
+		for key, value := range expectedValues {
+			// check if the key is defined in the config map
+			_, ok := cm.Data[key]
+			// updates values, if the key found or forceUpdate is enabled
+			if ok || forceUpdate {
+				cm.Data[key] = value
+			}
+		}
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cm)
+		if err != nil {
+			return err
+		}
+
+		u.SetUnstructuredContent(unstrObj)
+		return nil
+	}
+}
+
+// CopyConfigMap will copy all the values from the passed configmap to the configmap
+// in the manifest, the fields which are in manifest configmap will only be copied
+// any extra field will be ignored
+func CopyConfigMap(configMapName string, expectedValues map[string]string) mf.Transformer {
+	return CopyConfigMapWithForceUpdate(configMapName, expectedValues, false)
+}
+
+func ReplaceDeploymentArg(deploymentName, existingArg, newArg string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "Deployment" {
+			return nil
+		}
+		if u.GetName() != deploymentName {
+			return nil
+		}
+
+		d := &appsv1.Deployment{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, d)
+		if err != nil {
+			return err
+		}
+
+		for i, arg := range d.Spec.Template.Spec.Containers[0].Args {
+			if arg == existingArg {
+				d.Spec.Template.Spec.Containers[0].Args[i] = newArg
+			}
+		}
+
+		unstrObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(d)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(unstrObj)
+		return nil
+	}
+}
+
+// replaces the namespace in serviceAccount
+func ReplaceNamespaceInServiceAccount(targetNamespace string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "ServiceAccount" {
+			return nil
+		}
+
+		// update namespace
+		u.SetNamespace(targetNamespace)
+
+		return nil
+	}
+}
+
+// replaces the namespace in clusterRoleBinding
+func ReplaceNamespaceInClusterRoleBinding(targetNamespace string) mf.Transformer {
+	return func(u *unstructured.Unstructured) error {
+		if u.GetKind() != "ClusterRoleBinding" {
+			return nil
+		}
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, crb)
+		if err != nil {
+			return err
+		}
+
+		// update namespace
+		for index := range crb.Subjects {
+			crb.Subjects[index].Namespace = targetNamespace
+		}
+
+		obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(crb)
+		if err != nil {
+			return err
+		}
+		u.SetUnstructuredContent(obj)
 		return nil
 	}
 }

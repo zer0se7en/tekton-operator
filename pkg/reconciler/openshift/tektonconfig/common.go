@@ -18,17 +18,33 @@ package tektonconfig
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 
+	security "github.com/openshift/client-go/security/clientset/versioned"
+	"k8s.io/client-go/rest"
+	"knative.dev/pkg/logging"
+
+	mf "github.com/manifestival/manifestival"
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	"github.com/tektoncd/operator/pkg/client/clientset/versioned"
+	"github.com/tektoncd/operator/pkg/reconciler/common"
+	"github.com/tektoncd/operator/pkg/reconciler/kubernetes/tektoninstallerset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func createInstallerSet(ctx context.Context, oc versioned.Interface, tc *v1alpha1.TektonConfig, labels map[string]string,
-	releaseVersion, component, installerSetName string) error {
+func createInstallerSet(ctx context.Context, oc versioned.Interface, tc *v1alpha1.TektonConfig, releaseVersion string) error {
 
-	is := makeInstallerSet(tc, installerSetName, releaseVersion, labels)
+	// add pipelines-scc
+	pipelinescc := &mf.Manifest{}
+	pipelinesSCCLocation := filepath.Join(os.Getenv(common.KoEnvKey), "tekton-pipeline", "00-prereconcile")
+	if err := common.AppendManifest(pipelinescc, pipelinesSCCLocation); err != nil {
+		return err
+	}
+
+	is := makeInstallerSet(tc, releaseVersion)
+	is.Spec.Manifests = pipelinescc.Resources()
 
 	createdIs, err := oc.OperatorV1alpha1().TektonInstallerSets().
 		Create(ctx, is, metav1.CreateOptions{})
@@ -41,31 +57,20 @@ func createInstallerSet(ctx context.Context, oc versioned.Interface, tc *v1alpha
 	}
 
 	// Update the status of tektonConfig with created installerSet name
-	tc.Status.TektonInstallerSet[component] = createdIs.Name
-	tc.Status.SetVersion(releaseVersion)
-
-	return updateTektonConfigStatus(ctx, oc, tc)
+	tc.Status.TektonInstallerSet[rbacInstallerSetType] = createdIs.Name
+	return nil
 }
 
-func updateTektonConfigStatus(ctx context.Context, oc versioned.Interface, tc *v1alpha1.TektonConfig) error {
-
-	_, err := oc.OperatorV1alpha1().TektonConfigs().
-		UpdateStatus(ctx, tc, metav1.UpdateOptions{})
-	if err != nil {
-		return err
-	}
-
-	// here we return an error intentionally so that we reconcile again
-	// and proceed further with updated object instead
-	return v1alpha1.RECONCILE_AGAIN_ERR
-}
-
-func makeInstallerSet(tc *v1alpha1.TektonConfig, name, releaseVersion string, labels map[string]string) *v1alpha1.TektonInstallerSet {
+func makeInstallerSet(tc *v1alpha1.TektonConfig, releaseVersion string) *v1alpha1.TektonInstallerSet {
 	ownerRef := *metav1.NewControllerRef(tc, tc.GetGroupVersionKind())
 	return &v1alpha1.TektonInstallerSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: labels,
+			GenerateName: rbacInstallerSetNamePrefix,
+			Labels: map[string]string{
+				v1alpha1.CreatedByKey:      createdByValue,
+				v1alpha1.InstallerSetType:  rbacInstallerSetType,
+				v1alpha1.ReleaseVersionKey: releaseVersion,
+			},
 			Annotations: map[string]string{
 				v1alpha1.ReleaseVersionKey:  releaseVersion,
 				v1alpha1.TargetNamespaceKey: tc.Spec.TargetNamespace,
@@ -76,25 +81,18 @@ func makeInstallerSet(tc *v1alpha1.TektonConfig, name, releaseVersion string, la
 }
 
 func deleteInstallerSet(ctx context.Context, oc versioned.Interface, tc *v1alpha1.TektonConfig, component string) error {
-
-	compInstallerSet, ok := tc.Status.TektonInstallerSet[component]
-	if !ok {
-		return nil
+	labelSelector, err := common.LabelSelector(rbacInstallerSetSelector)
+	if err != nil {
+		return err
 	}
-
-	if compInstallerSet != "" {
-		// delete the installer set
-		err := oc.OperatorV1alpha1().TektonInstallerSets().
-			Delete(ctx, tc.Status.TektonInstallerSet[component], metav1.DeleteOptions{})
-		if err != nil && !errors.IsNotFound(err) {
-			return err
-		}
-
-		// clear the name of installer set from TektonConfig status
-		delete(tc.Status.TektonInstallerSet, component)
-
-		return updateTektonConfigStatus(ctx, oc, tc)
+	err = oc.OperatorV1alpha1().TektonInstallerSets().DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return err
 	}
+	// clear the name of installer set from TektonConfig status
+	delete(tc.Status.TektonInstallerSet, component)
 
 	return nil
 }
@@ -103,40 +101,57 @@ func deleteInstallerSet(ctx context.Context, oc versioned.Interface, tc *v1alpha
 // and if installer set which already exist is of older version then it deletes and return false to create a new
 // installer set
 func checkIfInstallerSetExist(ctx context.Context, oc versioned.Interface, relVersion string,
-	tc *v1alpha1.TektonConfig, component string) (bool, error) {
+	tc *v1alpha1.TektonConfig) (*v1alpha1.TektonInstallerSet, error) {
 
-	// Check if installer set is already created
-	compInstallerSet, ok := tc.Status.TektonInstallerSet[component]
-	if !ok {
-		return false, nil
+	labelSelector, err := common.LabelSelector(rbacInstallerSetSelector)
+	if err != nil {
+		return nil, err
+	}
+	existingInstallerSet, err := tektoninstallerset.CurrentInstallerSetName(ctx, oc, labelSelector)
+	if err != nil {
+		return nil, err
+	}
+	if existingInstallerSet == "" {
+		return nil, nil
 	}
 
-	if compInstallerSet != "" {
-		// if already created then check which version it is
-		ctIs, err := oc.OperatorV1alpha1().TektonInstallerSets().
-			Get(ctx, compInstallerSet, metav1.GetOptions{})
-		if err != nil {
-			if errors.IsNotFound(err) {
-				return false, nil
-			}
-			return false, err
+	// if already created then check which version it is
+	ctIs, err := oc.OperatorV1alpha1().TektonInstallerSets().
+		Get(ctx, existingInstallerSet, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
 		}
-
-		if version, ok := ctIs.Annotations[v1alpha1.ReleaseVersionKey]; ok && version == relVersion {
-			// if installer set already exist and release version is same
-			// then ignore and move on
-			return true, nil
-		}
-
-		// release version doesn't exist or is different from expected
-		// deleted existing InstallerSet and create a new one
-
-		err = oc.OperatorV1alpha1().TektonInstallerSets().
-			Delete(ctx, compInstallerSet, metav1.DeleteOptions{})
-		if err != nil {
-			return false, err
-		}
+		return nil, err
 	}
 
-	return false, nil
+	if version, ok := ctIs.Annotations[v1alpha1.ReleaseVersionKey]; ok && version == relVersion {
+		// if installer set already exist and release version is same
+		// then ignore and move on
+		return ctIs, nil
+	}
+
+	// release version doesn't exist or is different from expected
+	// deleted existing InstallerSet and create a new one
+
+	err = oc.OperatorV1alpha1().TektonInstallerSets().
+		Delete(ctx, existingInstallerSet, metav1.DeleteOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return nil, v1alpha1.RECONCILE_AGAIN_ERR
+}
+
+// Note: this should become a generic func going forward when we start adding
+// more OpenShift types
+func getSecurityClient(ctx context.Context) *security.Clientset {
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		logging.FromContext(ctx).Panic(err)
+	}
+	securityClient, err := security.NewForConfig(restConfig)
+	if err != nil {
+		logging.FromContext(ctx).Panic(err)
+	}
+	return securityClient
 }

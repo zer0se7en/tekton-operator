@@ -13,9 +13,10 @@ allowHostIPC: false
 allowHostNetwork: false
 allowHostPID: false
 allowHostPorts: false
-allowPrivilegeEscalation: true
+allowPrivilegeEscalation: false
 allowPrivilegedContainer: false
-allowedCapabilities: null
+allowedCapabilities:
+- SETFCAP
 defaultAddCapabilities: null
 fsGroup:
   type: MustRunAs

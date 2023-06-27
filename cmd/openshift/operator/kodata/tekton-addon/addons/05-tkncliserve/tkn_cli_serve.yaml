@@ -16,11 +16,20 @@ spec:
       labels:
         app: tkn-cli-serve
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: tkn-cli-serve
           image: docker.io/rupali/serve-tkn:v2
           ports:
             - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
 ---
 apiVersion: v1
 kind: Service

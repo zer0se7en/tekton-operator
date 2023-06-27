@@ -4,6 +4,7 @@ set -u -e
 
 declare -r SCRIPT_DIR=$(cd $(dirname "$0")/.. && pwd)
 TARGET=""
+FORCE_FETCH_RELEASE=""
 
 # release_yaml <component> <release-yaml-name> <target-file-name> <version>
 release_yaml() {
@@ -21,11 +22,11 @@ release_yaml() {
     fi
 
     if [[ $comp == "dashboard" ]]; then
-      if [[ ${releaseFileName} == "tekton-dashboard-release" ]]; then
+      if [[ ${releaseFileName} == "release-full" ]]; then
         dir="dashboard/tekton-dashboard-fullaccess"
       fi
 
-      if [[ ${releaseFileName} == "tekton-dashboard-release-readonly" ]]; then
+      if [[ ${releaseFileName} == "release" ]]; then
         dir="dashboard/tekton-dashboard-readonly"
       fi
     fi
@@ -53,6 +54,22 @@ release_yaml() {
 
     ko_data=${SCRIPT_DIR}/cmd/${TARGET}/operator/kodata
     comp_dir=${ko_data}/tekton-${dir}
+    dirPath=${comp_dir}/${dirVersion}
+
+    # destination file
+    dest=${dirPath}/${destFileName}.yaml
+
+    if [ -f "$dest" ] && [ $FORCE_FETCH_RELEASE = "false" ]; then
+      label="app.kubernetes.io/version: \"$version\""
+      label2="app.kubernetes.io/version: $version"
+      label3="version: \"$version\""
+      if grep -Eq "$label" $dest || grep -Eq "$label2" $dest || grep -Eq "$label3" $dest;
+      then
+          echo "release file already exist with required version, skipping!"
+          echo ""
+          return
+      fi
+    fi
 
     # before adding releases, remove existing version directories
     # ignore while adding for interceptors
@@ -61,11 +78,8 @@ release_yaml() {
     fi
 
     # create a directory
-    dirPath=${comp_dir}/${dirVersion}
     mkdir -p ${dirPath} || true
 
-    # destination file
-    dest=${dirPath}/${destFileName}.yaml
     http_response=$(curl -s -o ${dest} -w "%{http_code}" ${url})
     echo url: ${url}
 
@@ -102,50 +116,168 @@ release_yaml_pac() {
 
     ko_data=${SCRIPT_DIR}/cmd/${TARGET}/operator/kodata
     dirPath=${ko_data}/tekton-addon/pipelines-as-code/${version}
-    rm -rf ${dirPath} || true
-    mkdir -p ${dirPath} || true
 
-    url="https://raw.githubusercontent.com/openshift-pipelines/pipelines-as-code/release-${version}/release-${version}.yaml"
-
-    dest=${dirPath}/${fileName}.yaml
-    http_response=$(curl -s -o ${dest} -w "%{http_code}" ${url})
-    echo url: ${url}
-
-    if [[ $http_response != "200" ]]; then
-        echo "Error: failed to get $comp yaml, status code: $http_response"
-        exit 1
+    if [[ ${version} == "stable" ||  ${version} == "nightly" ]]; then
+      url="https://raw.githubusercontent.com/openshift-pipelines/pipelines-as-code/${version}/release.yaml"
+    else
+      url="https://raw.githubusercontent.com/openshift-pipelines/pipelines-as-code/release-${version}/release.yaml"
     fi
 
-    echo "Info: Added $comp/$fileName:$version release yaml !!"
+    dest=${dirPath}/${fileName}.yaml
+
+     if [ -f "$dest" ] && [ $FORCE_FETCH_RELEASE = "false" ]; then
+        label="app.kubernetes.io/version: \"$version\""
+        if grep -Eq "$label" $dest;
+          then
+            echo "release file already exist with required version, skipping!"
+            echo ""
+            return
+        fi
+     else
+         rm -rf ${dirPath} || true
+         mkdir -p ${dirPath} || true
+
+         http_response=$(curl -s -o ${dest} -w "%{http_code}" ${url})
+         echo url: ${url}
+
+         if [[ $http_response != "200" ]]; then
+             echo "Error: failed to get $comp yaml, status code: $http_response"
+             exit 1
+         fi
+
+         echo "Info: Added $comp/$fileName:$version release yaml !!"
+         echo ""
+     fi
+
+    runtime=( go java nodejs python generic )
+    for run in "${runtime[@]}"
+    do
+      echo "fetching PipelineRun template for runtime: $run"
+
+      source="https://raw.githubusercontent.com/openshift-pipelines/pipelines-as-code/${version}/pkg/cmd/tknpac/generate/templates/${run}.yaml"
+      dest_dir="${ko_data}/tekton-addon/pipelines-as-code-templates"
+      mkdir -p ${dest_dir} || true
+      destination="${dest_dir}/${run}.yaml"
+
+      http_response=$(curl -s -o ${destination} -w "%{http_code}" ${source})
+      echo url: ${source}
+
+      if [[ $http_response != "200" ]]; then
+        echo "Error: failed to get pipelinerun template for $run, status code: $http_response"
+        exit 1
+      fi
+
+    done
     echo ""
 }
 
-#Args: <target-platform> <pipelines version> <triggers version> <dashboard version> <results version> <pac version>
+
+release_yaml_hub() {
+  echo fetching '|' component: ${1} '|' version: ${2}
+  local version=$2
+
+  ko_data=${SCRIPT_DIR}/cmd/${TARGET}/operator/kodata
+  if [ ${version} == "latest" ]
+  then
+    version=$(curl -sL https://api.github.com/repos/tektoncd/hub/releases | jq -r ".[].tag_name" | sort -Vr | head -n1)
+    dirPath=${ko_data}/tekton-hub/0.0.0-latest
+  else
+    dirPath=${ko_data}/tekton-hub/${version}
+  fi
+  mkdir -p ${dirPath} || true
+
+  url=""
+  components="db db-migration api ui"
+
+  for component in ${components}; do
+    echo fetching Hub '|' component: ${component} '|' version: ${2}
+
+    dest=${dirPath}/${component}
+    fileName=${component}.yaml
+    destinationFile=${dest}/${fileName}
+
+    if [ -f "$destinationFile" ] && [ $FORCE_FETCH_RELEASE = "false" ]; then
+          if grep -Eq "$version" $destinationFile;
+          then
+              echo "release file already exist with required version, skipping!"
+              echo ""
+              continue
+          fi
+    fi
+
+    rm -rf ${dest} || true
+    mkdir -p ${dest} || true
+
+    [[ ${component} == "api" ]] || [[ ${component} == "ui" ]] && fileName=${component}-${TARGET}.yaml
+
+    url="https://github.com/tektoncd/hub/releases/download/${version}/${fileName}"
+    echo $url
+    http_response=$(curl -s -L -o ${destinationFile} -w "%{http_code}" ${url})
+    echo url: ${url}
+    if [[ $http_response != "200" ]]; then
+      echo "Error: failed to get ${component} yaml, status code: $http_response"
+      exit 1
+    fi
+    echo "Info: Added Hub/$fileName:$version release yaml !!"
+    echo ""
+  done
+}
+
+fetch_openshift_addon_tasks() {
+  fetch_addon_task_script="${SCRIPT_DIR}/hack/openshift"
+  local dest_dir="cmd/openshift/operator/kodata/tekton-addon/addons/02-clustertasks/source_external"
+  ${fetch_addon_task_script}/fetch-tektoncd-catalog-tasks.sh ${dest_dir}
+}
+
+copy_pruner_yaml() {
+  srcPath=${SCRIPT_DIR}/config/pruner
+  ko_data=${SCRIPT_DIR}/cmd/${TARGET}/operator/kodata
+  dstPath=${ko_data}/tekton-pruner
+  rm $dstPath -rf
+  cp $srcPath $dstPath -r
+}
+
 main() {
   TARGET=$1
-  p_version=${2}
-  t_version=${3}
+  CONFIG=${2:=components.yaml}
+  FORCE_FETCH_RELEASE=$3
+  p_version=$(go run ./cmd/tool component-version ${CONFIG} pipeline)
+  t_version=$(go run ./cmd/tool component-version ${CONFIG} triggers)
+  c_version=$(go run ./cmd/tool component-version ${CONFIG} chains)
+  r_version=$(go run ./cmd/tool component-version ${CONFIG} results)
 
-
+  # get release YAML for Pipelines
   release_yaml pipeline release 00-pipelines ${p_version}
 
+  # get release YAML for Triggers
   release_yaml triggers release 00-triggers ${t_version}
   release_yaml triggers interceptors 01-interceptors ${t_version}
 
-  if [[ ${TARGET} != "openshift" ]]; then
-    d_version=${4}
-    release_yaml dashboard tekton-dashboard-release 00-dashboard ${d_version}
-    release_yaml dashboard tekton-dashboard-release-readonly 00-dashboard ${d_version}
+  # get release YAML for Chains
+  release_yaml chains release 00-chains ${c_version}
 
-    r_version=${5}
-    release_yaml results release 00-results ${r_version}
+  # get release YAML for Results
+  release_yaml results release 00-results ${r_version}
+
+  if [[ ${TARGET} != "openshift" ]]; then
+    d_version=$(go run ./cmd/tool component-version ${CONFIG} dashboard)
+    # get release YAML for Dashboard
+    release_yaml dashboard release-full 00-dashboard ${d_version}
+    release_yaml dashboard release 00-dashboard ${d_version}
   else
-    pac_version=${6}
+    pac_version=$(go run ./cmd/tool component-version ${CONFIG} pipelines-as-code)
     release_yaml_pac pipelinesascode release ${pac_version}
+    fetch_openshift_addon_tasks
   fi
+
+  hub_version=$(go run ./cmd/tool component-version ${CONFIG} hub)
+  release_yaml_hub hub ${hub_version}
+
+  # copy pruner rbac/sa yaml
+  copy_pruner_yaml
+
+  echo updated payload tree
+  find cmd/${TARGET}/operator/kodata
 }
 
 main $@
-
-echo updated payload tree
-find cmd/${1}/operator/kodata

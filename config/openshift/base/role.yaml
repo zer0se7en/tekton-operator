@@ -20,6 +20,12 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - nodes
+  verbs:
+  - list
+- apiGroups:
+  - ""
+  resources:
   - pods
   - services
   - endpoints
@@ -128,6 +134,8 @@ rules:
   - create
   - update
   - delete
+  - list
+  - watch
 - apiGroups:
   - apiextensions.k8s.io
   resources:
@@ -193,16 +201,6 @@ rules:
   - patch
   - watch
 - apiGroups:
-  - policy
-  resources:
-  - podsecuritypolicies
-  verbs:
-  - get
-  - create
-  - update
-  - delete
-  - use
-- apiGroups:
   - operator.tekton.dev
   resources:
   - '*'
@@ -253,19 +251,30 @@ rules:
   verbs:
   - use
   - get
+  - list
   - create
   - update
   - delete
+# We need to create events when SCC requested in a namespace errors out.
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
 - apiGroups:
   - route.openshift.io
   resources:
   - routes
   verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
   - get
   - list
-  - create
   - update
-  - delete
+  - watch
 - apiGroups:
   - coordination.k8s.io
   resources:
@@ -284,6 +293,7 @@ rules:
   - consoleyamlsamples
   - consoleclidownloads
   - consolequickstarts
+  - consolelinks
   verbs:
   - delete
   - deletecollection
@@ -352,3 +362,13 @@ rules:
   - "namespaces/finalizers"
   verbs:
   - "update"
+- apiGroups:
+  - resolution.tekton.dev
+  resources:
+  - resolutionrequests
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete

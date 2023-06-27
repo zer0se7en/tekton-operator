@@ -6,32 +6,23 @@ metadata:
   name: operator-fetch-component-releases
 spec:
   params:
-  - name: PIPELINES_VERSION
-    description: Version of TektonCD Pipelines being fetched
-    default: "latest"
-  - name: TRIGGERS_VERSION
-    description: Version of TektonCD Triggers being fetched
-    default: "latest"
-  - name: DASHBOARD_VERSION
-    description: Version of TektonCD Dashboard being fetched
-    default: "latest"
-  - name: RESULTS_VERSION
-    description: Version of TektonCD Results being fetched
-    default: "latest"
+  - name: components
+    description: configuration file to reade
+    default: components.yaml
+    # TODO: Set default to nightly. Mar 09, 2022 - no nightly ("latest") releases available for Hub
   - name: TARGET_PLATFORMS
     description: Target platform for for which the payload is going to be used
     default: "kubernetes openshift"
   steps:
-  - image: docker.io/curlimages/curl:7.75.0
+  - image: docker.io/library/golang:1.18
     name: fetch-components
     workingDir: /go/src/github.com/tektoncd/operator
     script: |
-      #!/usr/bin/env sh
-      apk add bash # Bash is not present
+      #!/usr/bin/env bash
       for platform in $(params.TARGET_PLATFORMS); do
         echo "Fetching Tekton components for ${platform} build"
-        ./hack/fetch-releases.sh ${platform} $(params.PIPELINES_VERSION) $(params.TRIGGERS_VERSION) $(params.DASHBOARD_VERSION) $(params.RESULTS_VERSION)
-
+        make TARGET=${platform} get-releases
+        [[ "$?" != 0 ]] &&  exit 1
         # print directory structure of cmd/<platform>/operator/kodata
         find cmd/${platform}/operator/kodata/
       done

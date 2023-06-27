@@ -79,3 +79,8 @@ tags
 
 ### idea/goland ###
 .idea/*
+
+.bin/
+
+# ignore chain certificate
+test/e2e/common/cosign.pub

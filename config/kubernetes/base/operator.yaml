@@ -29,8 +29,13 @@ spec:
     spec:
       serviceAccountName: tekton-operator
       containers:
-      - name: tekton-operator
+      - name: tekton-operator-lifecycle  # all reconcilers except tektoninstallerset reconciler
         image: ko://github.com/tektoncd/operator/cmd/kubernetes/operator
+        args:
+        - "-controllers"
+        - "tektonconfig,tektonpipeline,tektontrigger,tektonhub,tektonchain,tektonresult,tektondashboard"
+        - "-unique-process-name"
+        - "tekton-operator-lifecycle"
         imagePullPolicy: Always
         env:
         - name: SYSTEM_NAMESPACE
@@ -46,7 +51,7 @@ spec:
         - name: IMAGE_PIPELINES_PROXY
           value: ko://github.com/tektoncd/operator/cmd/kubernetes/proxy-webhook
         - name: IMAGE_JOB_PRUNER_TKN
-          value: gcr.io/tekton-releases/dogfooding/tkn@sha256:025de221fb059ca24a3b2d988889ea34bce48dc76c0cf0d6b4499edb8c21325f
+          value: gcr.io/tekton-releases/dogfooding/tkn@sha256:8a17c7ad0fbb7278b2a4ed99b83078228060b60e474ab6321a7318a118c8b31e
         - name: METRICS_DOMAIN
           value: tekton.dev/operator
         - name: VERSION
@@ -63,3 +68,28 @@ spec:
             configMapKeyRef:
               name: tekton-config-defaults
               key: DEFAULT_TARGET_NAMESPACE
+      - name: tekton-operator-cluster-operations  # tektoninstallerset reconciler
+        image: ko://github.com/tektoncd/operator/cmd/kubernetes/operator
+        args:
+        - "-controllers"
+        - "tektoninstallerset"
+        - "-unique-process-name"
+        - "tekton-operator-cluster-operations"
+        imagePullPolicy: Always
+        env:
+          - name: SYSTEM_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: OPERATOR_NAME
+            value: "tekton-operator"
+          - name: PROFILING_PORT
+            value: "9009"
+          - name: VERSION
+            value: "devel"
+          - name: METRICS_DOMAIN
+            value: tekton.dev/operator

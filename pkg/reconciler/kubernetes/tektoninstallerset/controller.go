@@ -19,7 +19,6 @@ package tektoninstallerset
 import (
 	"context"
 
-	"github.com/go-logr/zapr"
 	mfc "github.com/manifestival/client-go-client"
 	"go.uber.org/zap"
 	"k8s.io/client-go/tools/cache"
@@ -29,6 +28,9 @@ import (
 	tektonInstallerinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektoninstallerset"
 	tektonInstallerReconciler "github.com/tektoncd/operator/pkg/client/injection/reconciler/operator/v1alpha1/tektoninstallerset"
 	deploymentinformer "knative.dev/pkg/client/injection/kube/informers/apps/v1/deployment"
+	serviceAccountInformer "knative.dev/pkg/client/injection/kube/informers/core/v1/serviceaccount"
+	clusterRoleInformer "knative.dev/pkg/client/injection/kube/informers/rbac/v1/clusterrole"
+	clusterRoleBindingInformer "knative.dev/pkg/client/injection/kube/informers/rbac/v1/clusterrolebinding"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/injection"
@@ -50,23 +52,33 @@ func NewExtendedController() injection.ControllerConstructor {
 		if err != nil {
 			logger.Fatalw("Error creating client from injected config", zap.Error(err))
 		}
-		mflogger := zapr.NewLogger(logger.Named("manifestival").Desugar())
 
 		c := &Reconciler{
 			operatorClientSet: operatorclient.Get(ctx),
 			mfClient:          mfclient,
-			mfLogger:          mflogger,
 		}
 		impl := tektonInstallerReconciler.NewImpl(ctx, c)
-
-		// Add enqueue func in reconciler
-		c.enqueueAfter = impl.EnqueueAfter
 
 		logger.Info("Setting up event handlers for TektonInstallerSet")
 
 		tektonInstallerinformer.Get(ctx).Informer().AddEventHandler(controller.HandleAll(impl.Enqueue))
 
 		deploymentinformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: controller.FilterController(&v1alpha1.TektonInstallerSet{}),
+			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
+		})
+
+		clusterRoleBindingInformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: controller.FilterController(&v1alpha1.TektonInstallerSet{}),
+			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
+		})
+
+		clusterRoleInformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+			FilterFunc: controller.FilterController(&v1alpha1.TektonInstallerSet{}),
+			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
+		})
+
+		serviceAccountInformer.Get(ctx).Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 			FilterFunc: controller.FilterController(&v1alpha1.TektonInstallerSet{}),
 			Handler:    controller.HandleAll(impl.EnqueueControllerOf),
 		})

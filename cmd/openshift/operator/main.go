@@ -17,20 +17,12 @@ limitations under the License.
 package main
 
 import (
-	"github.com/tektoncd/operator/pkg/reconciler/kubernetes/tektoninstallerset"
-	"github.com/tektoncd/operator/pkg/reconciler/openshift/tektonaddon"
-	"github.com/tektoncd/operator/pkg/reconciler/openshift/tektonconfig"
-	"github.com/tektoncd/operator/pkg/reconciler/openshift/tektonpipeline"
-	"github.com/tektoncd/operator/pkg/reconciler/openshift/tektontrigger"
-	"knative.dev/pkg/injection/sharedmain"
+	"github.com/tektoncd/operator/pkg/reconciler/openshift/openshiftplatform"
+	"github.com/tektoncd/operator/pkg/reconciler/platform"
 )
 
 func main() {
-	sharedmain.Main("tekton-operator",
-		tektonpipeline.NewController,
-		tektontrigger.NewController,
-		tektonaddon.NewController,
-		tektonconfig.NewController,
-		tektoninstallerset.NewController,
-	)
+	pConfig := platform.NewConfigFromFlags()
+	p := openshiftplatform.NewOpenShiftPlatform(pConfig)
+	platform.StartMainWithSelectedControllers(p)
 }

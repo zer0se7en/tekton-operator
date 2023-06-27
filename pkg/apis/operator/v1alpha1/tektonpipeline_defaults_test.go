@@ -21,13 +21,13 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/tektoncd/pipeline/pkg/apis/config"
 	"github.com/tektoncd/pipeline/test/diff"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/ptr"
 )
 
 func Test_SetDefaults_PipelineProperties(t *testing.T) {
-
 	tp := &TektonPipeline{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "name",
@@ -41,20 +41,29 @@ func Test_SetDefaults_PipelineProperties(t *testing.T) {
 	}
 
 	properties := PipelineProperties{
-		DisableHomeEnvOverwrite:                  ptr.Bool(true),
-		DisableWorkingDirectoryOverwrite:         ptr.Bool(true),
 		DisableCredsInit:                         ptr.Bool(false),
+		AwaitSidecarReadiness:                    ptr.Bool(true),
 		RunningInEnvironmentWithInjectedSidecars: ptr.Bool(true),
 		RequireGitSshSecretKnownHosts:            ptr.Bool(false),
 		EnableTektonOciBundles:                   ptr.Bool(false),
-		EnableCustomTasks:                        ptr.Bool(false),
-		EnableApiFields:                          ApiFieldStable,
-		ScopeWhenExpressionsToTask:               ptr.Bool(false),
+		EnableCustomTasks:                        ptr.Bool(true),
+		EnableApiFields:                          "stable",
+		EmbeddedStatus:                           "",
+		ScopeWhenExpressionsToTask:               nil,
+		SendCloudEventsForRuns:                   ptr.Bool(false),
+		VerificationNoMatchPolicy:                config.DefaultNoMatchPolicyConfig,
+		EnableProvenanceInStatus:                 ptr.Bool(true),
 		PipelineMetricsProperties: PipelineMetricsProperties{
-			MetricsPipelinerunDurationType: DefaultMetricsPipelierunDurationType,
-			MetricsPipelinerunLevel:        DefaultMetricsPipelinerunLevel,
-			MetricsTaskrunDurationType:     DefaultMetricsTaskrunDurationType,
-			MetricsTaskrunLevel:            DefaultMetricsTaskrunLevel,
+			MetricsPipelinerunDurationType: "histogram",
+			MetricsPipelinerunLevel:        "pipeline",
+			MetricsTaskrunDurationType:     "histogram",
+			MetricsTaskrunLevel:            "task",
+		},
+		Resolvers: Resolvers{
+			EnableBundlesResolver: ptr.Bool(true),
+			EnableHubResolver:     ptr.Bool(true),
+			EnableGitResolver:     ptr.Bool(true),
+			EnableClusterResolver: ptr.Bool(true),
 		},
 	}
 

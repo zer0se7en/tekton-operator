@@ -19,11 +19,11 @@ package tektontrigger
 import (
 	"context"
 
-	kubeclient "knative.dev/pkg/client/injection/kube/client"
-
 	tektonInstallerinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektoninstallerset"
 	tektonPipelineinformer "github.com/tektoncd/operator/pkg/client/injection/informers/operator/v1alpha1/tektonpipeline"
+	"github.com/tektoncd/operator/pkg/reconciler/kubernetes/tektoninstallerset/client"
 	"k8s.io/client-go/tools/cache"
+	kubeclient "knative.dev/pkg/client/injection/kube/client"
 
 	"github.com/tektoncd/operator/pkg/apis/operator/v1alpha1"
 	operatorclient "github.com/tektoncd/operator/pkg/client/injection/client"
@@ -66,20 +66,17 @@ func NewExtendedController(generator common.ExtensionGenerator) injection.Contro
 			logger.Fatal(err)
 		}
 
+		tisClient := operatorclient.Get(ctx).OperatorV1alpha1().TektonInstallerSets()
+
 		c := &Reconciler{
-			kubeClientSet:     kubeclient.Get(ctx),
-			operatorClientSet: operatorclient.Get(ctx),
-			pipelineInformer:  tektonPipelineinformer.Get(ctx),
-			extension:         generator(ctx),
-			manifest:          manifest,
-			operatorVersion:   operatorVer,
-			triggersVersion:   triggersVer,
-			metrics:           metrics,
+			kubeClientSet:      kubeclient.Get(ctx),
+			pipelineInformer:   tektonPipelineinformer.Get(ctx),
+			installerSetClient: client.NewInstallerSetClient(tisClient, operatorVer, triggersVer, v1alpha1.KindTektonTrigger, metrics),
+			extension:          generator(ctx),
+			manifest:           manifest,
+			triggersVersion:    triggersVer,
 		}
 		impl := tektonTriggerreconciler.NewImpl(ctx, c)
-
-		// Add enqueue func in reconciler
-		c.enqueueAfter = impl.EnqueueAfter
 
 		logger.Info("Setting up event handlers for TektonTrigger")
 
